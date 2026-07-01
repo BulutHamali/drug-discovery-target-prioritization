@@ -1,0 +1,32 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Data (never commit large data files)
+data/cache/
+data/raw/
+*.vcf.gz
+*.bcf
+*.bam
+*.cram
+*.parquet
+
+# Nextflow
+.nextflow/
+.nextflow.log*
+work/
+results/
+
+# macOS
+.DS_Store
