@@ -65,9 +65,21 @@ terraform destroy
 
 Validates the full DAG on one sample inside the default vCPU limit, before any quota increase.
 
+```bash
+# Fetch the chr22 VCF and reference files (run from us-east-1 for zero egress)
+bash data/fetch_1000genomes.sh
+bash data/fetch_ref.sh
+
+# Build the Python container for the burden and collect steps.
+# --platform linux/amd64 is required: the pipeline requests amd64 and an ARM Mac
+# otherwise builds an arm64 image that the run cannot find.
+docker build --platform linux/amd64 --load -t drug-target-burden:1.0 pipeline/docker/
+
+# Run the local validation (chr22, all samples, AF < 1%)
+nextflow run pipeline/main.nf -profile local
 ```
-# to add
-```
+
+Results land in `results/gene_burden_features.parquet`.
 
 ### 3. Build the ML layer (runs locally, no AWS needed)
 

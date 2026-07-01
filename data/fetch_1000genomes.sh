@@ -50,4 +50,15 @@ download_if_missing "${BUCKET}/${VCF_KEY}"    "${DEST}/chr22.vcf.gz"
 download_if_missing "${BUCKET}/${TBI_KEY}"    "${DEST}/chr22.vcf.gz.tbi"
 download_if_missing "${BUCKET}/${PANEL_KEY}"  "${DEST}/integrated_call_samples_v3.panel"
 
+# Ensure the tabix index exists. The S3 download above covers the normal path;
+# this catches a fresh clone where the VCF is present but the .tbi is absent.
+if [[ ! -s "${DEST}/chr22.vcf.gz.tbi" ]]; then
+  if ! command -v tabix &>/dev/null; then
+    echo "ERROR: tabix not found. Install htslib (brew install htslib) and re-run." >&2
+    exit 1
+  fi
+  echo "indexing: ${DEST}/chr22.vcf.gz"
+  tabix -p vcf "${DEST}/chr22.vcf.gz"
+fi
+
 echo "1000 Genomes subset ready in: $DEST"
