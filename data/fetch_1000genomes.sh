@@ -21,10 +21,17 @@ set -euo pipefail
 DEST="${DATA_CACHE_DIR:-$(dirname "$0")/cache/1000genomes}"
 BUCKET="s3://1000genomes"
 
-# chr22, phase 3 final callset
-VCF_KEY="phase3/data/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz"
+# chr22, phase 3 final callset. GRCh37/hg19 -- must match the Ensembl GRCh37 r87
+# references used by fetch_ref.sh; mismatched builds cause silent bcftools csq miscalls.
+#
+# Confirmed key pattern for autosomes chr1-22: release/20130502/ prefix, v5a suffix.
+# chrX (v1b) and chrY have different version strings and key patterns; update this
+# script separately before extending to sex chromosomes.
+VCF_KEY="release/20130502/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz"
 TBI_KEY="${VCF_KEY}.tbi"
-PANEL_KEY="phase3/20130502.phase3.analysis.sequence.index"
+# Population panel: sample ID -> population -> superpopulation mapping.
+# Verified present at this path (the old phase3/ prefix key does not exist).
+PANEL_KEY="release/20130502/integrated_call_samples_v3.20130502.ALL.panel"
 
 mkdir -p "$DEST"
 
@@ -41,6 +48,6 @@ download_if_missing() {
 
 download_if_missing "${BUCKET}/${VCF_KEY}"    "${DEST}/chr22.vcf.gz"
 download_if_missing "${BUCKET}/${TBI_KEY}"    "${DEST}/chr22.vcf.gz.tbi"
-download_if_missing "${BUCKET}/${PANEL_KEY}"  "${DEST}/phase3_samples.index"
+download_if_missing "${BUCKET}/${PANEL_KEY}"  "${DEST}/integrated_call_samples_v3.panel"
 
 echo "1000 Genomes subset ready in: $DEST"
