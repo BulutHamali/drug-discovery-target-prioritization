@@ -76,14 +76,20 @@ Keep it deliberately minimal. No remote-state backends, workspaces, custom modul
 | Layer | Source | Role |
 |-------|--------|------|
 | Population variants | 1000 Genomes (public, in-region) | Pipeline input, feeds genetic features |
-| Target-disease evidence | Open Targets | Public ground-truth backbone |
-| Known drugs / clinical phase | ChEMBL / Open Targets known-drug evidence | Label source |
+| Gene metadata | Open Targets `targets` table | ID mapping (Ensembl ID, symbol, biotype) |
+| Label | Open Targets `knownDrugsAggregated` | Clinical phase per gene; label only, not a feature |
 | Constraint | gnomAD (pLI, LOEUF, o/e) | Genetic features |
 | Structure | AlphaFold | Protein-intrinsic features |
 | Network | STRING | PPI features |
 | Expression / essentiality | GTEx, DepMap | Expression and safety features |
 
-Verify all feature and label structure against the current Open Targets data model. Their schema versions shift between releases.
+Open Targets is used for the label only. The `knownDrugsAggregated` table provides clinical phase per gene (binary label: clinical phase >= 1; continuous variant: max clinical phase). The `targets` table provides gene metadata for ID mapping. All drug and clinical evidence is excluded from features, as required by section 4.
+
+`associationByOverallDirect` is deliberately not used. It is a bundled overall score with no datatype breakdown, so genetic-association evidence cannot be separated from literature and other evidence types. Using it as a feature would reintroduce the section 4 circularity.
+
+Genetic-association evidence from `associationByDatatypeDirect` (filtered to `genetic_association`, with `known_drug` and `literature` datatypes excluded) is deferred to a possible v2. For v1 the feature set is as listed in section 5: gnomAD constraint already captures the genetic signal that matters, and a clean, defensible feature set is worth more than one additional source at this stage.
+
+Verify the label and gene metadata structure against the pinned Open Targets release (24.12). Schema fields shift between releases.
 
 ---
 
@@ -110,6 +116,8 @@ Aggregated per gene / protein, grouped by source.
 **Expression and essentiality.** Tissue specificity (tau) from GTEx, cell essentiality from DepMap. Tissue-restricted expression is a real safety and druggability signal.
 
 **The confounder, included on purpose.** Publication count and year-first-described. Included specifically so the model can be shown not to be riding it.
+
+Open Targets association scores are not in this feature set. See section 3 for the reasoning. The five source groups above (gnomAD, AlphaFold, STRING, GTEx/DepMap, publication metadata) are the complete v1 feature set.
 
 ---
 
