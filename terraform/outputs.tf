@@ -17,3 +17,8 @@ output "batch_job_role_arn" {
   description = "Job role ARN for container permissions."
   value       = aws_iam_role.job.arn
 }
+
+output "work_bucket_name" {
+  description = "S3 bucket for the Nextflow work directory and pipeline outputs."
+  value       = aws_s3_bucket.work.bucket
+}
