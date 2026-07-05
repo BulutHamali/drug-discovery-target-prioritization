@@ -128,9 +128,9 @@ Target $30 to $80 for the full project. Public in-region data, Spot instances, n
 
 ## Status checklist
 
-- [ ] Terraform stack applies and destroys cleanly
-- [ ] Pipeline validated end to end on one sample
-- [ ] Data layer (Open Targets, ChEMBL) built and labels defined
-- [ ] ML layer built and validated locally
+- [x] Terraform stack applies and destroys cleanly
+- [x] Pipeline validated end to end on one sample
+- [x] Data layer (Open Targets, ChEMBL) built and labels defined
+- [x] ML layer built and validated locally
 - [ ] Scaling benchmark run after quota increase
 - [ ] Results writeup and architecture diagram
