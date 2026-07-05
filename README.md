@@ -38,9 +38,9 @@ Networking uses public subnets with an Internet Gateway and an S3 Gateway VPC En
 
 ```
 terraform/        Infrastructure as code (VPC, Batch, IAM, S3 endpoint)
-pipeline/         Nextflow pipeline (to add)
-ml/               Feature engineering, training, evaluation (to add)
-data/             Data-layer build scripts: Open Targets, ChEMBL (to add)
+pipeline/         Nextflow pipeline (PREPARE, ANNOTATE, BURDEN, COLLECT)
+ml/               Feature engineering, leakage-safe split, training, evaluation
+data/             Data-layer build scripts: Open Targets, ChEMBL
 DESIGN.md         Full design rationale
 README.md         This file
 ```
@@ -83,9 +83,44 @@ Results land in `results/gene_burden_features.parquet`.
 
 ### 3. Build the ML layer (runs locally, no AWS needed)
 
+Each script is idempotent and caches its output in `ml/cache/`. Run them in
+order; each step checks that its inputs exist and exits with a clear error if
+a prerequisite is missing.
+
+```bash
+# Dependencies (once)
+pip install pandas pyarrow scikit-learn
+
+# Step 1: download HGNC protein-coding gene universe and build group keys
+# for the family-safe cross-validation split.
+python3 ml/gene_families.py
+
+# Step 2: download gnomAD v2.1.1 constraint metrics (pLI, LOEUF, oe_lof, oe_mis).
+# ~4.6 MB download, cached to ml/cache/.
+python3 ml/fetch_gnomad.py
+
+# Step 3: fetch Open Targets label data (knownDrugsAggregated).
+python3 data/fetch_chembl_known_drugs.py
+
+# Step 4: assemble the training table (gene universe + gnomAD + burden + label).
+# Requires results/gene_burden_features.parquet from step 2 of the pipeline.
+python3 ml/build_features.py
+
+# Step 5: GroupKFold split on gene family -- prevents paralog leakage.
+# Asserts zero group overlap in every fold.
+python3 ml/split.py
+
+# Step 6: train and evaluate. Prints PR-AUC, precision@k, and enrichment
+# factor per fold and averaged. Writes OOS predictions to ml/cache/.
+python3 ml/train_eval.py
 ```
-# to add
-```
+
+Outputs:
+- `ml/cache/gene_families.parquet` -- gene universe with group keys
+- `ml/cache/gnomad_constraint.parquet` -- constraint metrics
+- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 13 columns)
+- `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
+- `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks
 
 ## Cost
 
