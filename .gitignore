@@ -16,6 +16,7 @@ __pycache__/
 # Data (never commit large data files)
 data/cache/
 data/raw/
+ml/cache/
 *.vcf.gz
 *.bcf
 *.bam
