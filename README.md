@@ -107,19 +107,24 @@ python3 ml/fetch_alphafold.py
 # approximate betweenness centrality (~85 MB download, ~2-5 min to compute).
 python3 ml/fetch_string.py
 
-# Step 5: fetch Open Targets label data (knownDrugsAggregated).
+# Step 5: download GTEx v8 median tissue TPM (compute tau, tissue-specificity
+# index) and DepMap 24Q4 CRISPR gene effect (mean essentiality score across
+# cell lines). ~7 MB + ~430 MB download; the DepMap download is the long pole.
+python3 ml/fetch_expression.py
+
+# Step 6: fetch Open Targets label data (knownDrugsAggregated).
 python3 data/fetch_chembl_known_drugs.py
 
-# Step 6: assemble the training table (gene universe + gnomAD + AlphaFold +
-# STRING + burden + label). Requires results/gene_burden_features.parquet
-# from step 2 of the pipeline.
+# Step 7: assemble the training table (gene universe + gnomAD + AlphaFold +
+# STRING + GTEx/DepMap + burden + label). Requires
+# results/gene_burden_features.parquet from step 2 of the pipeline.
 python3 ml/build_features.py
 
-# Step 7: GroupKFold split on gene family -- prevents paralog leakage.
+# Step 8: GroupKFold split on gene family -- prevents paralog leakage.
 # Asserts zero group overlap in every fold.
 python3 ml/split.py
 
-# Step 8: train and evaluate. Prints PR-AUC, precision@k, and enrichment
+# Step 9: train and evaluate. Prints PR-AUC, precision@k, and enrichment
 # factor per fold and averaged. Writes OOS predictions to ml/cache/.
 python3 ml/train_eval.py
 ```
@@ -129,7 +134,8 @@ Outputs:
 - `ml/cache/gnomad_constraint.parquet` -- constraint metrics
 - `ml/cache/alphafold_features.parquet` -- protein length (UniProt Swiss-Prot)
 - `ml/cache/string_features.parquet` -- PPI degree and betweenness (STRING v12)
-- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 18 columns)
+- `ml/cache/expression_features.parquet` -- tissue-specificity (tau, GTEx) and essentiality (DepMap)
+- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 22 columns)
 - `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
 - `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks
 

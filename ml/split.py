@@ -47,7 +47,9 @@ FOLDS_FILE = os.path.join(CACHE_DIR, "cv_folds.parquet")
 FEATURE_COLS = [
     "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
     "protein_length", "ppi_degree", "ppi_betweenness",
+    "tau", "essentiality_score",
     "has_gnomad", "has_burden", "has_alphafold", "has_string",
+    "has_tau", "has_essentiality",
 ]
 
 

@@ -6,17 +6,19 @@ Run AFTER:
   python3 ml/fetch_gnomad.py     -- produces ml/cache/gnomad_constraint.parquet
   python3 ml/fetch_alphafold.py  -- produces ml/cache/alphafold_features.parquet
   python3 ml/fetch_string.py     -- produces ml/cache/string_features.parquet
+  python3 ml/fetch_expression.py -- produces ml/cache/expression_features.parquet
   nextflow run pipeline/main.nf  -- produces results/gene_burden_features.parquet
 
 Output: ml/cache/training_table.parquet
 
 Join strategy (all LEFT joins from the gene universe):
-  universe -> label:     Ensembl gene ID  (OT uses ENSG IDs as targetId)
-  universe -> gnomAD:    Ensembl gene ID, symbol fallback for HGNC genes that
+  universe -> label:      Ensembl gene ID  (OT uses ENSG IDs as targetId)
+  universe -> gnomAD:     Ensembl gene ID, symbol fallback for HGNC genes that
                          lack an Ensembl mapping
-  universe -> burden:    gene symbol  (what the Nextflow COLLECT step outputs)
-  universe -> alphafold: gene symbol  (UniProt gene_names field)
-  universe -> STRING:    gene symbol  (STRING preferred_name field)
+  universe -> burden:     gene symbol  (what the Nextflow COLLECT step outputs)
+  universe -> alphafold:  gene symbol  (UniProt gene_names field)
+  universe -> STRING:     gene symbol  (STRING preferred_name field)
+  universe -> expression: gene symbol  (GTEx Description field / DepMap column header)
 
 Missing-feature handling (both explicit and documented):
 
@@ -51,6 +53,16 @@ Missing-feature handling (both explicit and documented):
     zero measured high-confidence interactions -- the same "real zero"
     reasoning as burden, not an approximation.
 
+  Expression (tau, essentiality_score):
+    Fill each with its own column median computed on observed genes.
+    Set has_tau=0 / has_essentiality=0 independently, since tau (GTEx) and
+    essentiality_score (DepMap) come from two different sources and a gene
+    can be missing from one but not the other.
+    WHY median: same reasoning as gnomAD/AlphaFold -- tau=0 would falsely
+    imply a perfectly ubiquitous housekeeping gene, and essentiality_score=0
+    would falsely imply a specific (dispensable) essentiality reading,
+    for genes we simply have no measurement for.
+
 Label:
   Binary: max(phase) >= 1 per gene.
   Continuous: max(phase) (for regression framing).
@@ -75,12 +87,14 @@ FAMILIES_FILE   = os.path.join(CACHE_DIR, "gene_families.parquet")
 GNOMAD_FILE     = os.path.join(CACHE_DIR, "gnomad_constraint.parquet")
 ALPHAFOLD_FILE  = os.path.join(CACHE_DIR, "alphafold_features.parquet")
 STRING_FILE     = os.path.join(CACHE_DIR, "string_features.parquet")
+EXPRESSION_FILE = os.path.join(CACHE_DIR, "expression_features.parquet")
 BURDEN_FILE     = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
 OUT_FILE        = os.path.join(CACHE_DIR, "training_table.parquet")
 
-GNOMAD_FEAT_COLS = ["pLI", "loeuf", "oe_lof", "oe_mis"]
+GNOMAD_FEAT_COLS    = ["pLI", "loeuf", "oe_lof", "oe_mis"]
 ALPHAFOLD_FEAT_COLS = ["protein_length"]
 STRING_FEAT_COLS    = ["ppi_degree", "ppi_betweenness"]
+EXPRESSION_FEAT_COLS = ["tau", "essentiality_score"]
 
 
 def find_ot_drug_files():
@@ -107,6 +121,7 @@ def check_inputs():
         (GNOMAD_FILE,    "ml/fetch_gnomad.py"),
         (ALPHAFOLD_FILE, "ml/fetch_alphafold.py"),
         (STRING_FILE,    "ml/fetch_string.py"),
+        (EXPRESSION_FILE, "ml/fetch_expression.py"),
         (BURDEN_FILE,    "nextflow run pipeline/main.nf -profile local"),
     ]:
         if not os.path.exists(path):
@@ -164,6 +179,11 @@ def load_string():
     return df[["symbol"] + STRING_FEAT_COLS].copy()
 
 
+def load_expression():
+    df = pd.read_parquet(EXPRESSION_FILE)
+    return df[["symbol"] + EXPRESSION_FEAT_COLS].copy()
+
+
 def fill_gnomad_missing(df):
     """
     Compute medians on observed (non-imputed) rows, then fill NaN.
@@ -190,6 +210,26 @@ def fill_alphafold_missing(df):
     medians = {}
     for col in ALPHAFOLD_FEAT_COLS:
         med = df.loc[df["has_alphafold"] == 1, col].median()
+        medians[col] = med
+        df[col] = df[col].fillna(med)
+    return df, medians
+
+
+EXPRESSION_FLAG_COLS = {"tau": "has_tau", "essentiality_score": "has_essentiality"}
+
+
+def fill_expression_missing(df):
+    """
+    tau (GTEx) and essentiality_score (DepMap) are independently missing
+    since they come from two different source files merged in
+    fetch_expression.py -- each gets its own has_* flag and its own
+    median, rather than sharing one flag like gnomAD's four columns do.
+    """
+    medians = {}
+    for col in EXPRESSION_FEAT_COLS:
+        flag = EXPRESSION_FLAG_COLS[col]
+        df[flag] = df[col].notna().astype(int)
+        med = df.loc[df[flag] == 1, col].median()
         medians[col] = med
         df[col] = df[col].fillna(med)
     return df, medians
@@ -223,6 +263,11 @@ def build():
     print("loading STRING PPI features ...")
     string_feats = load_string()
     print(f"  {len(string_feats):,} genes with PPI degree/betweenness")
+
+    # ── Expression / essentiality features ───────────────────────────────────
+    print("loading GTEx/DepMap expression features ...")
+    expression = load_expression()
+    print(f"  {len(expression):,} genes with tau and/or essentiality_score")
 
     # ── Burden features ───────────────────────────────────────────────────────
     print("loading burden features ...")
@@ -278,6 +323,10 @@ def build():
     df["has_string"] = df["ppi_degree"].notna().astype(int)
     df["ppi_degree"]      = df["ppi_degree"].fillna(0).astype(int)
     df["ppi_betweenness"] = df["ppi_betweenness"].fillna(0.0)
+
+    # ── Join 6: expression/essentiality onto universe (gene symbol) ──────────
+    df = df.merge(expression, on="symbol", how="left")
+    df, expression_medians = fill_expression_missing(df)
 
     # ── Required checks ───────────────────────────────────────────────────────
     print()
@@ -335,6 +384,16 @@ def build():
     print(f"       {n_no_string:,} genes have no high-confidence STRING edges -- "
           f"filled ppi_degree=0, ppi_betweenness=0, has_string=0")
 
+    # Check 4d: expression/essentiality coverage.
+    n_with_tau = df["has_tau"].sum()
+    n_with_ess = df["has_essentiality"].sum()
+    print(f"[INFO] GTEx coverage: {n_with_tau:,} genes have real tau "
+          f"({n_with_tau/len(df):.1%} of universe)")
+    print(f"[INFO] DepMap coverage: {n_with_ess:,} genes have real essentiality_score "
+          f"({n_with_ess/len(df):.1%} of universe)")
+    print(f"       median-imputed: "
+          f"{ {k: round(v, 3) for k, v in expression_medians.items()} }")
+
     # Check 5: no gene appears more than once.
     n_dupes = df["symbol"].duplicated().sum()
     assert n_dupes == 0, f"FAIL: {n_dupes} duplicate gene symbols after join"
@@ -348,7 +407,9 @@ def build():
         "n_rare", "n_lof",
         "protein_length",
         "ppi_degree", "ppi_betweenness",
+        "tau", "essentiality_score",
         "has_gnomad", "has_burden", "has_alphafold", "has_string",
+        "has_tau", "has_essentiality",
     ]
     df = df[[c for c in final_cols if c in df.columns]]
 
