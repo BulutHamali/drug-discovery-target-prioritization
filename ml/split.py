@@ -44,7 +44,11 @@ FOLDS_FILE = os.path.join(CACHE_DIR, "cv_folds.parquet")
 
 # Feature columns: must match build_features.py and train_eval.py.
 # Defined here so split.py can pass a correctly shaped X to GroupKFold.split().
-FEATURE_COLS = ["pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof", "has_gnomad", "has_burden"]
+FEATURE_COLS = [
+    "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
+    "protein_length", "ppi_degree", "ppi_betweenness",
+    "has_gnomad", "has_burden", "has_alphafold", "has_string",
+]
 
 
 def main():

@@ -53,7 +53,11 @@ TABLE_FILE  = os.path.join(CACHE_DIR, "training_table.parquet")
 FOLDS_FILE  = os.path.join(CACHE_DIR, "cv_folds.parquet")
 OOS_FILE    = os.path.join(CACHE_DIR, "oos_predictions.parquet")
 
-FEATURE_COLS = ["pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof", "has_gnomad", "has_burden"]
+FEATURE_COLS = [
+    "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
+    "protein_length", "ppi_degree", "ppi_betweenness",
+    "has_gnomad", "has_burden", "has_alphafold", "has_string",
+]
 
 # Ranking thresholds -- k absolute and percent-of-test for enrichment factor.
 K_VALUES   = [100, 500]

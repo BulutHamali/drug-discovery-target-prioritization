@@ -4,15 +4,19 @@ Assemble the training table from all feature and label sources.
 Run AFTER:
   python3 ml/gene_families.py    -- produces ml/cache/gene_families.parquet
   python3 ml/fetch_gnomad.py     -- produces ml/cache/gnomad_constraint.parquet
+  python3 ml/fetch_alphafold.py  -- produces ml/cache/alphafold_features.parquet
+  python3 ml/fetch_string.py     -- produces ml/cache/string_features.parquet
   nextflow run pipeline/main.nf  -- produces results/gene_burden_features.parquet
 
 Output: ml/cache/training_table.parquet
 
 Join strategy (all LEFT joins from the gene universe):
-  universe -> label:   Ensembl gene ID  (OT uses ENSG IDs as targetId)
-  universe -> gnomAD:  Ensembl gene ID, symbol fallback for HGNC genes that
-                       lack an Ensembl mapping
-  universe -> burden:  gene symbol  (what the Nextflow COLLECT step outputs)
+  universe -> label:     Ensembl gene ID  (OT uses ENSG IDs as targetId)
+  universe -> gnomAD:    Ensembl gene ID, symbol fallback for HGNC genes that
+                         lack an Ensembl mapping
+  universe -> burden:    gene symbol  (what the Nextflow COLLECT step outputs)
+  universe -> alphafold: gene symbol  (UniProt gene_names field)
+  universe -> STRING:    gene symbol  (STRING preferred_name field)
 
 Missing-feature handling (both explicit and documented):
 
@@ -34,6 +38,19 @@ Missing-feature handling (both explicit and documented):
     structural run. These genes are NOT dropped: they are part of the
     protein-coding universe and some are positives.
 
+  AlphaFold/UniProt (protein_length):
+    Fill with column median computed on observed genes. Set has_alphafold=0.
+    WHY median: same reasoning as gnomAD -- protein_length=0 is not a
+    meaningful value for a gene, so median says "this gene is a typical
+    length" rather than implying anything about size.
+
+  STRING (ppi_degree, ppi_betweenness):
+    Fill with 0. Set has_string=0 (flag; 1 means the gene has at least one
+    high-confidence STRING interaction, combined_score >= 700).
+    WHY 0: a gene absent from the high-confidence PPI graph genuinely has
+    zero measured high-confidence interactions -- the same "real zero"
+    reasoning as burden, not an approximation.
+
 Label:
   Binary: max(phase) >= 1 per gene.
   Continuous: max(phase) (for regression framing).
@@ -54,12 +71,16 @@ CACHE_DIR   = os.environ.get("ML_CACHE_DIR", "ml/cache")
 RESULTS_DIR = os.environ.get("RESULTS_DIR", "results")
 DATA_DIR    = os.environ.get("DATA_CACHE_DIR", "data/cache")
 
-FAMILIES_FILE = os.path.join(CACHE_DIR, "gene_families.parquet")
-GNOMAD_FILE   = os.path.join(CACHE_DIR, "gnomad_constraint.parquet")
-BURDEN_FILE   = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
-OUT_FILE      = os.path.join(CACHE_DIR, "training_table.parquet")
+FAMILIES_FILE   = os.path.join(CACHE_DIR, "gene_families.parquet")
+GNOMAD_FILE     = os.path.join(CACHE_DIR, "gnomad_constraint.parquet")
+ALPHAFOLD_FILE  = os.path.join(CACHE_DIR, "alphafold_features.parquet")
+STRING_FILE     = os.path.join(CACHE_DIR, "string_features.parquet")
+BURDEN_FILE     = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
+OUT_FILE        = os.path.join(CACHE_DIR, "training_table.parquet")
 
 GNOMAD_FEAT_COLS = ["pLI", "loeuf", "oe_lof", "oe_mis"]
+ALPHAFOLD_FEAT_COLS = ["protein_length"]
+STRING_FEAT_COLS    = ["ppi_degree", "ppi_betweenness"]
 
 
 def find_ot_drug_files():
@@ -82,9 +103,11 @@ def find_ot_drug_files():
 def check_inputs():
     errors = []
     for path, script in [
-        (FAMILIES_FILE, "ml/gene_families.py"),
-        (GNOMAD_FILE,   "ml/fetch_gnomad.py"),
-        (BURDEN_FILE,   "nextflow run pipeline/main.nf -profile local"),
+        (FAMILIES_FILE,  "ml/gene_families.py"),
+        (GNOMAD_FILE,    "ml/fetch_gnomad.py"),
+        (ALPHAFOLD_FILE, "ml/fetch_alphafold.py"),
+        (STRING_FILE,    "ml/fetch_string.py"),
+        (BURDEN_FILE,    "nextflow run pipeline/main.nf -profile local"),
     ]:
         if not os.path.exists(path):
             errors.append(f"  missing: {path}  ->  run: {script}")
@@ -131,6 +154,16 @@ def load_gnomad():
     return df[["gene_id", "gene"] + GNOMAD_FEAT_COLS].copy()
 
 
+def load_alphafold():
+    df = pd.read_parquet(ALPHAFOLD_FILE)
+    return df[["symbol"] + ALPHAFOLD_FEAT_COLS].copy()
+
+
+def load_string():
+    df = pd.read_parquet(STRING_FILE)
+    return df[["symbol"] + STRING_FEAT_COLS].copy()
+
+
 def fill_gnomad_missing(df):
     """
     Compute medians on observed (non-imputed) rows, then fill NaN.
@@ -143,6 +176,20 @@ def fill_gnomad_missing(df):
     medians = {}
     for col in GNOMAD_FEAT_COLS:
         med = df.loc[df["has_gnomad"] == 1, col].median()
+        medians[col] = med
+        df[col] = df[col].fillna(med)
+    return df, medians
+
+
+def fill_alphafold_missing(df):
+    """
+    Same median-fill approach as fill_gnomad_missing: has_alphafold=1 means
+    real UniProt data; has_alphafold=0 means median-imputed protein_length.
+    """
+    df["has_alphafold"] = df["protein_length"].notna().astype(int)
+    medians = {}
+    for col in ALPHAFOLD_FEAT_COLS:
+        med = df.loc[df["has_alphafold"] == 1, col].median()
         medians[col] = med
         df[col] = df[col].fillna(med)
     return df, medians
@@ -166,6 +213,16 @@ def build():
     # ── gnomAD constraint ─────────────────────────────────────────────────────
     print("\nloading gnomAD constraint ...")
     gnomad = load_gnomad()
+
+    # ── AlphaFold/UniProt protein length ─────────────────────────────────────
+    print("loading AlphaFold/UniProt protein features ...")
+    alphafold = load_alphafold()
+    print(f"  {len(alphafold):,} genes with protein_length")
+
+    # ── STRING PPI features ──────────────────────────────────────────────────
+    print("loading STRING PPI features ...")
+    string_feats = load_string()
+    print(f"  {len(string_feats):,} genes with PPI degree/betweenness")
 
     # ── Burden features ───────────────────────────────────────────────────────
     print("loading burden features ...")
@@ -212,6 +269,16 @@ def build():
     df["n_rare"] = df["n_rare"].fillna(0).astype(int)
     df["n_lof"]  = df["n_lof"].fillna(0).astype(int)
 
+    # ── Join 4: AlphaFold/UniProt protein length onto universe (gene symbol) ──
+    df = df.merge(alphafold, on="symbol", how="left")
+    df, alphafold_medians = fill_alphafold_missing(df)
+
+    # ── Join 5: STRING PPI features onto universe (gene symbol) ──────────────
+    df = df.merge(string_feats, on="symbol", how="left")
+    df["has_string"] = df["ppi_degree"].notna().astype(int)
+    df["ppi_degree"]      = df["ppi_degree"].fillna(0).astype(int)
+    df["ppi_betweenness"] = df["ppi_betweenness"].fillna(0.0)
+
     # ── Required checks ───────────────────────────────────────────────────────
     print()
     print("=" * 56)
@@ -252,6 +319,22 @@ def build():
     print(f"       {n_no_gnomad:,} genes median-imputed: "
           f"{ {k: round(v, 3) for k, v in gnomad_medians.items()} }")
 
+    # Check 4b: AlphaFold/UniProt coverage.
+    n_with_af = df["has_alphafold"].sum()
+    n_no_af   = len(df) - n_with_af
+    print(f"[INFO] AlphaFold/UniProt coverage: {n_with_af:,} genes have real protein_length "
+          f"({n_with_af/len(df):.1%} of universe)")
+    print(f"       {n_no_af:,} genes median-imputed: "
+          f"{ {k: round(v, 3) for k, v in alphafold_medians.items()} }")
+
+    # Check 4c: STRING coverage.
+    n_with_string = df["has_string"].sum()
+    n_no_string   = len(df) - n_with_string
+    print(f"[INFO] STRING coverage: {n_with_string:,} genes have high-confidence PPI data "
+          f"({n_with_string/len(df):.1%} of universe)")
+    print(f"       {n_no_string:,} genes have no high-confidence STRING edges -- "
+          f"filled ppi_degree=0, ppi_betweenness=0, has_string=0")
+
     # Check 5: no gene appears more than once.
     n_dupes = df["symbol"].duplicated().sum()
     assert n_dupes == 0, f"FAIL: {n_dupes} duplicate gene symbols after join"
@@ -263,7 +346,9 @@ def build():
         "label", "max_phase",
         "pLI", "loeuf", "oe_lof", "oe_mis",
         "n_rare", "n_lof",
-        "has_gnomad", "has_burden",
+        "protein_length",
+        "ppi_degree", "ppi_betweenness",
+        "has_gnomad", "has_burden", "has_alphafold", "has_string",
     ]
     df = df[[c for c in final_cols if c in df.columns]]
 

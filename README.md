@@ -89,7 +89,7 @@ a prerequisite is missing.
 
 ```bash
 # Dependencies (once)
-pip install pandas pyarrow scikit-learn
+pip install pandas pyarrow scikit-learn networkx
 
 # Step 1: download HGNC protein-coding gene universe and build group keys
 # for the family-safe cross-validation split.
@@ -99,18 +99,27 @@ python3 ml/gene_families.py
 # ~4.6 MB download, cached to ml/cache/.
 python3 ml/fetch_gnomad.py
 
-# Step 3: fetch Open Targets label data (knownDrugsAggregated).
+# Step 3: download UniProt Swiss-Prot protein features (protein_length).
+# ~3-5 MB download, cached to ml/cache/.
+python3 ml/fetch_alphafold.py
+
+# Step 4: download STRING v12 PPI network and compute per-gene degree and
+# approximate betweenness centrality (~85 MB download, ~2-5 min to compute).
+python3 ml/fetch_string.py
+
+# Step 5: fetch Open Targets label data (knownDrugsAggregated).
 python3 data/fetch_chembl_known_drugs.py
 
-# Step 4: assemble the training table (gene universe + gnomAD + burden + label).
-# Requires results/gene_burden_features.parquet from step 2 of the pipeline.
+# Step 6: assemble the training table (gene universe + gnomAD + AlphaFold +
+# STRING + burden + label). Requires results/gene_burden_features.parquet
+# from step 2 of the pipeline.
 python3 ml/build_features.py
 
-# Step 5: GroupKFold split on gene family -- prevents paralog leakage.
+# Step 7: GroupKFold split on gene family -- prevents paralog leakage.
 # Asserts zero group overlap in every fold.
 python3 ml/split.py
 
-# Step 6: train and evaluate. Prints PR-AUC, precision@k, and enrichment
+# Step 8: train and evaluate. Prints PR-AUC, precision@k, and enrichment
 # factor per fold and averaged. Writes OOS predictions to ml/cache/.
 python3 ml/train_eval.py
 ```
@@ -118,7 +127,9 @@ python3 ml/train_eval.py
 Outputs:
 - `ml/cache/gene_families.parquet` -- gene universe with group keys
 - `ml/cache/gnomad_constraint.parquet` -- constraint metrics
-- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 13 columns)
+- `ml/cache/alphafold_features.parquet` -- protein length (UniProt Swiss-Prot)
+- `ml/cache/string_features.parquet` -- PPI degree and betweenness (STRING v12)
+- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 18 columns)
 - `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
 - `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks
 
