@@ -48,8 +48,9 @@ FEATURE_COLS = [
     "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
     "protein_length", "ppi_degree", "ppi_betweenness",
     "tau", "essentiality_score",
+    "pub_count", "year_first_described",
     "has_gnomad", "has_burden", "has_alphafold", "has_string",
-    "has_tau", "has_essentiality",
+    "has_tau", "has_essentiality", "has_pub_count", "has_year_described",
 ]
 
 

@@ -18,12 +18,19 @@ Why GradientBoostingClassifier:
   thresholds that matter (e.g. pLI > 0.9 is a known constraint cliff).
 
 Study-bias check (DESIGN.md 6.2):
-  The gold standard is correlation of gene score with publication count (PubMed
-  or Europe PMC). Publication count is NOT in the v1 feature set but the hook is
-  explicitly marked below. For this run, has_gnomad is used as a proxy: a gene
-  absent from gnomAD (has_gnomad=0) is poorly characterised, so if such genes
-  score low, the model may be tracking characterisation depth rather than true
-  biology. We report the mean predicted score for has_gnomad=0 vs has_gnomad=1.
+  The gold standard is correlation of gene score with publication count
+  (pub_count, from ml/fetch_publications.py / NCBI gene2pubmed -- now part
+  of the v1 feature set, included deliberately as the confounder). We
+  report the Spearman correlation between OOS score and log(pub_count + 1),
+  and PR-AUC binned by publication-count tercile: if the model still ranks
+  well among the least-published (understudied) genes, it is doing real
+  biological work rather than just tracking gene fame.
+
+  As a secondary, cheaper proxy: has_gnomad is also checked -- a gene
+  absent from gnomAD (has_gnomad=0) is poorly characterised, so if such
+  genes score low, the model may be tracking characterisation depth rather
+  than true biology. We report the mean predicted score for has_gnomad=0
+  vs has_gnomad=1.
 
 Fold reconstruction:
   Reads ml/cache/cv_folds.parquet written by split.py. This guarantees that
@@ -43,6 +50,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+from scipy.stats import spearmanr
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import average_precision_score
 
@@ -57,8 +65,9 @@ FEATURE_COLS = [
     "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
     "protein_length", "ppi_degree", "ppi_betweenness",
     "tau", "essentiality_score",
+    "pub_count", "year_first_described",
     "has_gnomad", "has_burden", "has_alphafold", "has_string",
-    "has_tau", "has_essentiality",
+    "has_tau", "has_essentiality", "has_pub_count", "has_year_described",
 ]
 
 # Ranking thresholds -- k absolute and percent-of-test for enrichment factor.
@@ -245,21 +254,45 @@ def main():
     print(f"  Score ratio (gnomad=1 / gnomad=0):                   {ratio:.2f}x")
     if ratio > 2.0:
         print("  [WARN] Characterisation-depth bias suspected: gnomAD genes score >2x higher.")
-        print("         Add publication count to features and re-check (see hook below).")
+        print("         See the publication-count check below for the primary signal.")
     else:
         print("  [OK] Score ratio is below 2x -- no strong characterisation-depth signal.")
 
-    # [STUDY-BIAS HOOK] --------------------------------------------------------
-    # Replace this comment block with a real publication-count bias check when
-    # Europe PMC / PubMed gene-mention counts are available as a feature or a
-    # sidecar file. The check is:
-    #   1. Join OOS predictions with pub_count per gene symbol.
-    #   2. Compute Spearman correlation between score and log(pub_count + 1).
-    #   3. If |rho| > 0.5, the model is primarily ranking on gene fame.
-    #   4. Re-train with pub_count AS a feature (study-bias-aware model) and
-    #      compare PR-AUC; a big jump means biology signal was being masked.
-    # See DESIGN.md section 6.2 for full specification.
-    # [END STUDY-BIAS HOOK] ---------------------------------------------------
+    # ── Study-bias check: publication count (DESIGN.md 6.2, the killer result) ─
+    # This is the primary defense against the "model just learned which genes
+    # are famous" failure mode. pub_count/year_first_described are deliberate
+    # confounder features (ml/fetch_publications.py) -- included specifically
+    # so we can check whether the model is riding them.
+    print("\nSTUDY-BIAS CHECK: publication count (DESIGN.md section 6.2)")
+
+    pub_count = df.set_index("symbol").loc[oos["symbol"], "pub_count"].values
+    rho, pval = spearmanr(oos["score"].values, np.log1p(pub_count))
+    print(f"  Spearman rho(score, log(pub_count + 1)): {rho:.3f}  (p={pval:.2e})")
+    if abs(rho) > 0.5:
+        print("  [WARN] |rho| > 0.5 -- the model may be primarily ranking on gene fame.")
+    else:
+        print("  [OK] |rho| <= 0.5 -- publication count is not the dominant ranking signal.")
+
+    # Bin genes by publication-count tercile and compare PR-AUC across bins.
+    # Rank-based (not value-based) quantile cuts because pub_count is heavily
+    # right-skewed with many ties at low counts -- ranking guarantees three
+    # non-empty, roughly equal-sized bins regardless of that skew.
+    pub_rank = pd.Series(pub_count).rank(method="first")
+    pub_tercile = pd.qcut(pub_rank, q=3, labels=["low", "medium", "high"])
+
+    print("\n  PR-AUC by publication-count tercile "
+          "(comparable PR-AUC across bins means real signal, not just fame):")
+    print(f"  {'tercile':>8}  {'n':>6}  {'n_pos':>6}  {'PR-AUC':>8}  {'mean pub_count':>15}")
+    for tercile in ["low", "medium", "high"]:
+        mask = (pub_tercile == tercile).values
+        n_pos_bin = int(oos.loc[mask, "label"].sum())
+        if n_pos_bin == 0:
+            print(f"  {tercile:>8}  {mask.sum():>6,}  {n_pos_bin:>6}  {'n/a':>8}  "
+                  f"{pub_count[mask].mean():>15.1f}  (no positives in bin)")
+            continue
+        bin_pr = average_precision_score(oos.loc[mask, "label"], oos.loc[mask, "score"])
+        print(f"  {tercile:>8}  {mask.sum():>6,}  {n_pos_bin:>6}  {bin_pr:>8.4f}  "
+              f"{pub_count[mask].mean():>15.1f}")
 
     # ── Structural-validation caveat ──────────────────────────────────────────
     print()

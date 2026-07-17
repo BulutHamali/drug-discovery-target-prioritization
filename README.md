@@ -112,20 +112,27 @@ python3 ml/fetch_string.py
 # cell lines). ~7 MB + ~430 MB download; the DepMap download is the long pole.
 python3 ml/fetch_expression.py
 
-# Step 6: fetch Open Targets label data (knownDrugsAggregated).
+# Step 6: download NCBI gene2pubmed (~272 MB) and compute publication count
+# and first-described year per gene -- the deliberate confounder feature
+# (DESIGN.md section 5), used by the study-bias check in step 9.
+python3 ml/fetch_publications.py
+
+# Step 7: fetch Open Targets label data (knownDrugsAggregated).
 python3 data/fetch_chembl_known_drugs.py
 
-# Step 7: assemble the training table (gene universe + gnomAD + AlphaFold +
-# STRING + GTEx/DepMap + burden + label). Requires
+# Step 8: assemble the training table (gene universe + gnomAD + AlphaFold +
+# STRING + GTEx/DepMap + publication metadata + burden + label). Requires
 # results/gene_burden_features.parquet from step 2 of the pipeline.
 python3 ml/build_features.py
 
-# Step 8: GroupKFold split on gene family -- prevents paralog leakage.
+# Step 9: GroupKFold split on gene family -- prevents paralog leakage.
 # Asserts zero group overlap in every fold.
 python3 ml/split.py
 
-# Step 9: train and evaluate. Prints PR-AUC, precision@k, and enrichment
-# factor per fold and averaged. Writes OOS predictions to ml/cache/.
+# Step 10: train and evaluate. Prints PR-AUC, precision@k, and enrichment
+# factor per fold and averaged, plus the study-bias check (score vs.
+# publication count, PR-AUC by pub-count tercile). Writes OOS predictions
+# to ml/cache/.
 python3 ml/train_eval.py
 ```
 
@@ -135,7 +142,8 @@ Outputs:
 - `ml/cache/alphafold_features.parquet` -- protein length (UniProt Swiss-Prot)
 - `ml/cache/string_features.parquet` -- PPI degree and betweenness (STRING v12)
 - `ml/cache/expression_features.parquet` -- tissue-specificity (tau, GTEx) and essentiality (DepMap)
-- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 22 columns)
+- `ml/cache/publication_features.parquet` -- pub_count and year_first_described (NCBI gene2pubmed)
+- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 26 columns)
 - `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
 - `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks
 

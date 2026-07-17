@@ -6,19 +6,21 @@ Run AFTER:
   python3 ml/fetch_gnomad.py     -- produces ml/cache/gnomad_constraint.parquet
   python3 ml/fetch_alphafold.py  -- produces ml/cache/alphafold_features.parquet
   python3 ml/fetch_string.py     -- produces ml/cache/string_features.parquet
-  python3 ml/fetch_expression.py -- produces ml/cache/expression_features.parquet
+  python3 ml/fetch_expression.py  -- produces ml/cache/expression_features.parquet
+  python3 ml/fetch_publications.py -- produces ml/cache/publication_features.parquet
   nextflow run pipeline/main.nf  -- produces results/gene_burden_features.parquet
 
 Output: ml/cache/training_table.parquet
 
 Join strategy (all LEFT joins from the gene universe):
-  universe -> label:      Ensembl gene ID  (OT uses ENSG IDs as targetId)
-  universe -> gnomAD:     Ensembl gene ID, symbol fallback for HGNC genes that
-                         lack an Ensembl mapping
-  universe -> burden:     gene symbol  (what the Nextflow COLLECT step outputs)
-  universe -> alphafold:  gene symbol  (UniProt gene_names field)
-  universe -> STRING:     gene symbol  (STRING preferred_name field)
-  universe -> expression: gene symbol  (GTEx Description field / DepMap column header)
+  universe -> label:       Ensembl gene ID  (OT uses ENSG IDs as targetId)
+  universe -> gnomAD:      Ensembl gene ID, symbol fallback for HGNC genes that
+                          lack an Ensembl mapping
+  universe -> burden:      gene symbol  (what the Nextflow COLLECT step outputs)
+  universe -> alphafold:   gene symbol  (UniProt gene_names field)
+  universe -> STRING:      gene symbol  (STRING preferred_name field)
+  universe -> expression:  gene symbol  (GTEx Description field / DepMap column header)
+  universe -> publication: gene symbol  (via Entrez GeneID -> HGNC symbol mapping)
 
 Missing-feature handling (both explicit and documented):
 
@@ -63,6 +65,19 @@ Missing-feature handling (both explicit and documented):
     would falsely imply a specific (dispensable) essentiality reading,
     for genes we simply have no measurement for.
 
+  Publication metadata (pub_count, year_first_described):
+    pub_count: fill with 0. Set has_pub_count=0.
+    WHY 0: a gene absent from gene2pubmed genuinely has zero curated
+    publication associations -- the same "real zero" reasoning as burden,
+    not an approximation.
+    year_first_described: fill with column median. Set has_year_described=0.
+    WHY median: a gene with no publications has no "first described" year
+    at all, and 0 is not a meaningful year -- median says "this gene's
+    literature history is typical" for the genes we have no record for.
+    This is the confounder feature (DESIGN.md section 5): included on
+    purpose so the study-bias check in train_eval.py can test whether the
+    model is ranking on gene fame rather than biology.
+
 Label:
   Binary: max(phase) >= 1 per gene.
   Continuous: max(phase) (for regression framing).
@@ -87,14 +102,16 @@ FAMILIES_FILE   = os.path.join(CACHE_DIR, "gene_families.parquet")
 GNOMAD_FILE     = os.path.join(CACHE_DIR, "gnomad_constraint.parquet")
 ALPHAFOLD_FILE  = os.path.join(CACHE_DIR, "alphafold_features.parquet")
 STRING_FILE     = os.path.join(CACHE_DIR, "string_features.parquet")
-EXPRESSION_FILE = os.path.join(CACHE_DIR, "expression_features.parquet")
-BURDEN_FILE     = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
-OUT_FILE        = os.path.join(CACHE_DIR, "training_table.parquet")
+EXPRESSION_FILE  = os.path.join(CACHE_DIR, "expression_features.parquet")
+PUBLICATION_FILE = os.path.join(CACHE_DIR, "publication_features.parquet")
+BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
+OUT_FILE         = os.path.join(CACHE_DIR, "training_table.parquet")
 
-GNOMAD_FEAT_COLS    = ["pLI", "loeuf", "oe_lof", "oe_mis"]
-ALPHAFOLD_FEAT_COLS = ["protein_length"]
-STRING_FEAT_COLS    = ["ppi_degree", "ppi_betweenness"]
+GNOMAD_FEAT_COLS     = ["pLI", "loeuf", "oe_lof", "oe_mis"]
+ALPHAFOLD_FEAT_COLS  = ["protein_length"]
+STRING_FEAT_COLS     = ["ppi_degree", "ppi_betweenness"]
 EXPRESSION_FEAT_COLS = ["tau", "essentiality_score"]
+PUBLICATION_FEAT_COLS = ["pub_count", "year_first_described"]
 
 
 def find_ot_drug_files():
@@ -122,6 +139,7 @@ def check_inputs():
         (ALPHAFOLD_FILE, "ml/fetch_alphafold.py"),
         (STRING_FILE,    "ml/fetch_string.py"),
         (EXPRESSION_FILE, "ml/fetch_expression.py"),
+        (PUBLICATION_FILE, "ml/fetch_publications.py"),
         (BURDEN_FILE,    "nextflow run pipeline/main.nf -profile local"),
     ]:
         if not os.path.exists(path):
@@ -184,6 +202,11 @@ def load_expression():
     return df[["symbol"] + EXPRESSION_FEAT_COLS].copy()
 
 
+def load_publications():
+    df = pd.read_parquet(PUBLICATION_FILE)
+    return df[["symbol"] + PUBLICATION_FEAT_COLS].copy()
+
+
 def fill_gnomad_missing(df):
     """
     Compute medians on observed (non-imputed) rows, then fill NaN.
@@ -235,6 +258,22 @@ def fill_expression_missing(df):
     return df, medians
 
 
+def fill_publication_missing(df):
+    """
+    pub_count: real zero for genes absent from gene2pubmed (burden-style).
+    year_first_described: median-fill, no genuine zero value exists
+    (gnomAD/AlphaFold-style).
+    """
+    df["has_pub_count"] = df["pub_count"].notna().astype(int)
+    df["pub_count"] = df["pub_count"].fillna(0).astype(int)
+
+    df["has_year_described"] = df["year_first_described"].notna().astype(int)
+    year_median = df.loc[df["has_year_described"] == 1, "year_first_described"].median()
+    df["year_first_described"] = df["year_first_described"].fillna(year_median)
+
+    return df, {"year_first_described": year_median}
+
+
 def build():
     drug_files, ot_release = check_inputs()
 
@@ -268,6 +307,11 @@ def build():
     print("loading GTEx/DepMap expression features ...")
     expression = load_expression()
     print(f"  {len(expression):,} genes with tau and/or essentiality_score")
+
+    # ── Publication metadata (the deliberate confounder) ─────────────────────
+    print("loading publication metadata ...")
+    publications = load_publications()
+    print(f"  {len(publications):,} genes with pub_count/year_first_described")
 
     # ── Burden features ───────────────────────────────────────────────────────
     print("loading burden features ...")
@@ -327,6 +371,10 @@ def build():
     # ── Join 6: expression/essentiality onto universe (gene symbol) ──────────
     df = df.merge(expression, on="symbol", how="left")
     df, expression_medians = fill_expression_missing(df)
+
+    # ── Join 7: publication metadata onto universe (gene symbol) ─────────────
+    df = df.merge(publications, on="symbol", how="left")
+    df, publication_medians = fill_publication_missing(df)
 
     # ── Required checks ───────────────────────────────────────────────────────
     print()
@@ -394,6 +442,16 @@ def build():
     print(f"       median-imputed: "
           f"{ {k: round(v, 3) for k, v in expression_medians.items()} }")
 
+    # Check 4e: publication metadata coverage (the deliberate confounder).
+    n_with_pub = df["has_pub_count"].sum()
+    n_no_pub   = len(df) - n_with_pub
+    print(f"[INFO] publication coverage: {n_with_pub:,} genes have real pub_count "
+          f"({n_with_pub/len(df):.1%} of universe)")
+    print(f"       {n_no_pub:,} genes have no gene2pubmed record -- filled pub_count=0, "
+          f"has_pub_count=0")
+    print(f"       year_first_described median-imputed: "
+          f"{ {k: round(v, 1) for k, v in publication_medians.items()} }")
+
     # Check 5: no gene appears more than once.
     n_dupes = df["symbol"].duplicated().sum()
     assert n_dupes == 0, f"FAIL: {n_dupes} duplicate gene symbols after join"
@@ -408,8 +466,9 @@ def build():
         "protein_length",
         "ppi_degree", "ppi_betweenness",
         "tau", "essentiality_score",
+        "pub_count", "year_first_described",
         "has_gnomad", "has_burden", "has_alphafold", "has_string",
-        "has_tau", "has_essentiality",
+        "has_tau", "has_essentiality", "has_pub_count", "has_year_described",
     ]
     df = df[[c for c in final_cols if c in df.columns]]
 
