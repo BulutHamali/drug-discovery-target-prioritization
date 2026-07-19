@@ -22,3 +22,13 @@ output "work_bucket_name" {
   description = "S3 bucket for the Nextflow work directory and pipeline outputs."
   value       = aws_s3_bucket.work.bucket
 }
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for the BURDEN/COLLECT image. Tag and push here, then reference it in nextflow.config's awsbatch profile."
+  value       = aws_ecr_repository.burden.repository_url
+}
+
+output "ecr_bcftools_batch_repository_url" {
+  description = "ECR repository URL for the PREPARE/ANNOTATE (bcftools + awscli) image."
+  value       = aws_ecr_repository.bcftools_batch.repository_url
+}

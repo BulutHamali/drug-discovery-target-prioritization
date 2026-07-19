@@ -33,3 +33,14 @@ variable "max_vcpus" {
   type        = number
   default     = 4
 }
+
+variable "budget_limit" {
+  description = "Monthly cost budget in USD. Alerts fire as spend approaches this."
+  type        = string
+  default     = "50"
+}
+
+variable "budget_alert_email" {
+  description = "Email address that receives budget alerts. Set in terraform.tfvars (gitignored), not here."
+  type        = string
+}
