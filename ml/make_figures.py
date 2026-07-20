@@ -76,14 +76,15 @@ def enrichment_curve():
 
 def forest_plot():
     """Q1/Q2 combined: ml/train_eval.py --compare, "PRIMARY EVALUATION:
-    MEDIAN SPLIT" section (README.md Q1 table). bottom-half lift = does the
-    model beat chance on understudied genes; the four variants' non-overlap
-    is the Q2 evidence that discovery-history features add real signal
-    beyond biology_only."""
+    MEDIAN SPLIT" section (README.md Q1 table), post-disorder_fraction.
+    bottom-half lift = does the model beat chance on understudied genes
+    (Q1, still yes for all four). biology_only and all_features CIs now
+    nearly touch rather than cleanly separate (Q2, weaker than before
+    disorder_fraction was added, see README.md Q2 section)."""
     variants = ["all_features", "no_pubcount", "no_pubcount_no_string", "biology_only"]
-    lift = np.array([5.14, 5.53, 4.00, 2.66])
-    ci_lo = np.array([3.98, 4.17, 3.04, 2.12])
-    ci_hi = np.array([7.25, 8.07, 5.93, 3.64])
+    lift = np.array([5.28, 5.62, 4.52, 2.76])
+    ci_lo = np.array([3.99, 4.15, 3.34, 2.17])
+    ci_hi = np.array([7.76, 8.13, 7.04, 4.00])
 
     y_pos = np.arange(len(variants))[::-1]
 
@@ -105,7 +106,7 @@ def forest_plot():
     ax.set_yticklabels(variants)
     ax.set_xlabel("bottom-half (understudied genes) lift, median split, 95% CI")
     ax.set_title("Median-split lift by feature set\n"
-                  "biology_only and all_features CIs do not overlap")
+                  "all four clear 1.0; biology_only and all_features now nearly touch")
     ax.set_xlim(0, 9.5)
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="x", alpha=0.3)

@@ -257,16 +257,20 @@ CI sits entirely above 1.0:
 
 | variant | bottom-half lift | 95% CI |
 |---|---|---|
-| all_features | 5.14 | [3.98, 7.25] |
-| no_pubcount | 5.53 | [4.17, 8.07] |
-| no_pubcount_no_string | 4.00 | [3.04, 5.93] |
-| biology_only | 2.66 | [2.12, 3.64] |
+| all_features | 5.28 | [3.99, 7.76] |
+| no_pubcount | 5.62 | [4.15, 8.13] |
+| no_pubcount_no_string | 4.52 | [3.34, 7.04] |
+| biology_only | 2.76 | [2.17, 4.00] |
 
-![Forest plot of median-split lift by feature set, with 95% CIs and a reference line at 1.0. biology_only's CI does not overlap all_features' CI.](docs/figures/median_split_forest.png)
+(Numbers above include `disorder_fraction`, added to the feature set after
+this table was first produced; see "SHAP and bootstrap stability selection"
+below. `biology_only` is now 16 features, `all_features` 23.)
 
-Every variant's CI clears the 1.0 reference line (Q1), and biology_only's
-CI does not overlap all_features' (Q2), visible directly rather than
-requiring a mental comparison of interval endpoints.
+![Forest plot of median-split lift by feature set, with 95% CIs and a reference line at 1.0.](docs/figures/median_split_forest.png)
+
+Every variant's CI clears the 1.0 reference line, which is the whole Q1
+answer. `biology_only`'s CI and `all_features`' CI now nearly touch
+(2.17-4.00 vs. 3.99-7.76), see Q2 below for what changed.
 
 The model beats a random ranker on understudied genes even with every
 publication-history and network-centrality feature removed (`biology_only`).
@@ -277,20 +281,33 @@ genuine null; the median split resolves it.
 
 ### Q2: do discovery-history features add information beyond mechanistic biology?
 
-**Yes, measurably.** Paired bootstrap comparison of `biology_only` vs.
-`no_pubcount` on identical folds, computed on the low-publication-tercile
-lift (not the median split): mean difference -8.33, 95% CI [-16.84, -0.03],
-sign test 1-4 (one fold favored `biology_only`, four favored `no_pubcount`).
-Note precisely what this isolates: neither variant has `pub_count` itself,
-`no_pubcount` differs from `biology_only` only by retaining
-`year_first_described` and STRING centrality, so this specific result is the
-measured value of those two discovery-history features alone, not of
-`pub_count`. The broader, full add-everything-back comparison is the
-median-split non-overlap: `biology_only` [2.12, 3.64] vs. `all_features`
-[3.98, 7.25], which does include `pub_count`. Together, two different tests
-on two different comparisons reach the same conclusion: discovery-history
-features measurably improve ranking performance beyond mechanistic biology
-alone, by more than sampling noise can explain.
+**Weaker than an earlier version of this analysis found, and the update
+itself is the interesting part.** Paired bootstrap comparison of
+`biology_only` vs. `no_pubcount` on identical folds, computed on the
+low-publication-tercile lift: mean difference -8.00, 95% CI
+[-17.19, +0.21], sign test still 1-4 (one fold favored `biology_only`, four
+favored `no_pubcount`, same direction as before). The CI now includes zero.
+The median-split comparison tells the same story: `biology_only`
+[2.17, 4.00] vs. `all_features` [3.99, 7.76] now overlap by a hair (0.01).
+
+Before `disorder_fraction` was added to the feature set, this same paired
+bootstrap excluded zero (mean diff -8.33, 95% CI [-16.84, -0.03]) and the
+median-split CIs did not overlap ([2.12, 3.64] vs. [3.98, 7.25]), the basis
+for an earlier "yes, measurably" answer here. Adding one more real,
+time-stable biology feature closed most of that gap: `disorder_fraction`
+turns out to be one of the two most important features in `biology_only`
+by SHAP (co-dominant with `tau`, see below), and it is stable across
+resampling (selected in 100% of bootstrap resamples in every variant). The
+sign test direction hasn't changed (`no_pubcount` and `all_features` still
+edge out `biology_only` in 4 of 5 folds), so there may still be a real,
+small effect, but it is no longer distinguishable from sampling noise at
+conventional confidence with the current feature set and fold count.
+
+This is reported as the update it is, not smoothed over: the honest
+answer to Q2 moved from "yes" to "no longer clearly yes" when the feature
+set became more complete, which is itself evidence for the Open Question
+below, that missing biology, not just fame, was likely responsible for
+some of what looked like a discovery-history-features effect.
 
 ### Open question: how much of that benefit is study bias vs. genuine biology?
 
@@ -324,6 +341,44 @@ fame") was deliberately not implemented: that residual would contain
 technological accessibility, funding history, disease salience, and noise,
 not just fame, and is a causal claim this project cannot support.
 
+`disorder_fraction` was not included in this correlation table (it was
+added to the feature set after this table was first produced), but the Q2
+update above is directly relevant here: closing most of the `biology_only`
+vs. `all_features` gap by adding one more real biology feature is
+consistent with a meaningful share of the original gap being missing
+biology rather than fame, though it does not prove it, `disorder_fraction`
+could itself happen to correlate with discovery timing the same way the
+table above's features do. That correlation was not separately checked.
+
+### SHAP and bootstrap stability selection
+
+Two methodology items from DESIGN.md (sections 6.2, 6.5, 7), previously
+listed here as deferred, are now implemented in `ml/train_eval.py` and run
+as part of `--compare`.
+
+**SHAP** (`shap.TreeExplainer` on the same full-data model used for
+`feature_importances_`): the two importance mechanisms broadly agree, and
+where they disagree, the disagreement is informative. In `biology_only`,
+`feature_importances_` ranks `tau` first (0.213) and `disorder_fraction`
+fourth (0.120); SHAP ranks them essentially tied for first (`tau` 0.373,
+`disorder_fraction` 0.371), both well clear of everything else. Both
+methods agree `disorder_fraction` is a top-tier contributor, not a minor
+one, contrary to what was expected here going in (a real but likely
+secondary contributor was the working assumption before this run).
+
+**Bootstrap stability selection** (50 row-level resamples of the full
+training set, refit each time, tracks how often each feature lands in the
+top 10 by `feature_importances_`, features selected in more than 70% of
+resamples flagged as stable): the core biology features, gnomAD
+constraint (`pLI`, `loeuf`, `oe_mis`, `oe_lof`), burden (`n_rare`),
+expression (`tau`, `essentiality_score`), and structure (`protein_length`,
+`disorder_fraction`), are selected in 96 to 100% of resamples across all
+four variants. `pub_count` and `year_first_described`, where present, are
+also stable at 100%, consistent with real (if confounded) predictive
+signal rather than noise. `n_lof` and `ppi_betweenness` are the least
+stable features, near the bottom of most variants' top 10 or absent from
+it in some resamples.
+
 ### Secondary validations, both weak, reported honestly
 
 Two smaller checks, both against real external evidence, both underpowered
@@ -333,10 +388,10 @@ rest of these results.
 **Genetic evidence check** (`ml/validate_genetic_evidence.py`): among
 `biology_only`'s top-ranked unlabeled genes, checked for independent human
 genetic disease evidence (Open Targets Genetics, `associationByDatatypeDirect`
-filtered to `genetic_association`, threshold score >= 0.5). Top 50: 0.580
-observed vs. 0.501 baseline, within the baseline 95% CI [0.360, 0.640], not
+filtered to `genetic_association`, threshold score >= 0.5). Top 50: 0.540
+observed vs. 0.501 baseline, within the baseline 95% CI [0.360, 0.620], not
 distinguishable from noise at this N. Top 100: 1.26x enrichment, above the
-baseline CI. Top 500: 1.37x enrichment, above the baseline CI. This check is
+baseline CI. Top 500: 1.42x enrichment, above the baseline CI. This check is
 confounded by design: genetic disease evidence makes a gene more likely to
 already attract a drug program, so it measures whether the model ranks
 toward genes the field would find interesting, not whether they are
@@ -346,13 +401,16 @@ druggable.
 an earlier, smaller version of the temporal holdout above, using the same
 24.09 label the main ablation trains against and a shorter gap to 26.06.
 Only 30 genes moved from unlabeled to labeled in that window, an
-underpowered sample by construction. Enrichment ratios (2.04x at top 5%,
-1.36x at top 10%, 1.84x at top 20%) were directionally consistent but none
-individually cleared the resampled baseline's 95% CI. Stated as the
-underpowered, inconclusive aggregate result it is, first. One individual
-gene is worth naming as an anecdote, not evidence: **KCNMA1** ranked
-18th of 17,789 unlabeled genes in that check and has since gained a
-clinical-phase drug in release 26.06. Interesting, but n=1.
+underpowered sample by construction. Enrichment ratios (0.68x at top 5%,
+2.03x at top 10%, 1.84x at top 20%) were noisy at this N and all fell
+within their resampled baseline's 95% CI, an inconclusive aggregate result,
+same conclusion as before `disorder_fraction` was added, though the
+individual point estimates moved around (as expected with n=30). Stated as
+the underpowered, inconclusive result it is, first. One individual gene is
+worth naming as an anecdote, not evidence: **KCNMA1** ranked 51st of
+17,789 unlabeled genes in that check (was 18th before `disorder_fraction`
+was added, still comfortably top 1%) and has since gained a clinical-phase
+drug in release 26.06. Interesting, but n=1.
 
 ### Also solid: n_rare importance trend
 
@@ -410,28 +468,22 @@ DESIGN.md section 9.
   and the genetic-evidence check's top-50 slice do not, and are reported as
   such rather than dressed up.
 
-### Future work
+### Closed out: SHAP, bootstrap stability selection, disorder_fraction
 
-Two things from the original design (DESIGN.md) were flagged as planned but
-not built as of the previous pass through this document: SHAP
-interpretability (DESIGN.md sections 6.2 and 7) and bootstrap stability
-selection (DESIGN.md section 6.5). Both are now implemented in
-`ml/train_eval.py`: SHAP values via `shap.TreeExplainer` on the same
-full-data model used for `feature_importances_`, printed alongside it in
-every run; bootstrap stability selection as 50 row-level resamples of the
-full training set, refit each time, reporting how often each feature lands
-in the top 10 by `feature_importances_` (features selected in more than 70%
-of resamples flagged as stable). See DESIGN.md sections 6.2 and 6.5 for the
-full method, and the Results section above for what they found.
-
-One item remains:
-
-- **AlphaFold `disorder_fraction`.** `ml/fetch_alphafold.py --disorder`
-  fetches this per-protein from the AlphaFold DB prediction API (roughly
-  90-100 min at a steady rate, longer in practice since the API's actual
-  throughput varies, ~20k requests). Wired into `build_features.py` and
-  `train_eval.py`'s feature set (`FULL_FEATURE_COLS`), pending a full fetch
-  run to populate real values in `training_table.parquet`.
+Three items from the original design (DESIGN.md) were flagged in an earlier
+pass through this document as planned but not built: SHAP interpretability
+(sections 6.2, 7), bootstrap stability selection (section 6.5), and
+AlphaFold `disorder_fraction` (section 5). All three are now implemented
+and their results are folded into the sections above, not held back here.
+Two things are worth calling out explicitly rather than leaving implicit:
+fetching `disorder_fraction` required fixing `ml/fetch_alphafold.py`, its
+`--disorder` flag pointed at a dead AlphaFold DB URL (every versioned bulk
+file 404s now; the correct source is AlphaFold DB's prediction API), and
+once added, `disorder_fraction` turned out to be a much bigger contributor
+than expected (co-dominant with `tau` in `biology_only` by SHAP), enough to
+change the Q2 conclusion above from a clean "yes" to "no longer clearly
+yes." Both are the kind of thing a real implementation pass finds that
+planning documents don't anticipate.
 
 ## Cost
 
