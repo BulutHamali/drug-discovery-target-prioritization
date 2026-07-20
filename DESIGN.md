@@ -2,7 +2,7 @@
 
 **Repository:** `drug-discovery-target-prioritization`
 
-A Nextflow-on-AWS pipeline that turns population genetic data into ML-ranked druggable targets, scored against real clinical outcomes. Built to demonstrate large-scale cloud orchestration, biologically grounded feature engineering, and leakage-safe ML evaluation.
+A Nextflow-on-AWS pipeline that turns population genetic data into ML-ranked druggable targets, scored against real clinical outcomes. Built to demonstrate cloud-native genomics orchestration, biologically grounded feature engineering, and leakage-safe ML evaluation.
 
 ---
 
@@ -10,13 +10,9 @@ A Nextflow-on-AWS pipeline that turns population genetic data into ML-ranked dru
 
 Target identification ("which protein should we drug") is the highest-value and highest-failure decision in drug discovery. Most clinical failures trace back to the wrong target, not bad chemistry. The AI-first biotechs (Insitro, Recursion) and the Open Targets consortium (GSK + EMBL-EBI) are organized around exactly this question.
 
-This project is deliberately scoped as the single Nextflow-on-AWS-at-100TB showpiece, not a sixth standalone portfolio piece. It does three jobs at once:
+This project tests a specific, falsifiable claim: that mechanistic biology features (genetic constraint, rare-variant burden, tissue specificity, protein structure, cell essentiality) predict which genes go on to reach clinical-phase drug development, independent of how well-studied or well-connected a gene already is. That second part, ruling out study bias as the explanation, is most of the design effort described below.
 
-1. Closes the large-scale-cloud gap that has cost interviews.
-2. Demonstrates the bio + cloud intersection rather than "data scientist transitioning."
-3. Showcases biology judgment, which is the real edge over the data-science-only crowd.
-
-The orchestration layer is home turf (Nextflow Ambassador) and should not absorb interview-prep energy. The hand-coded effort goes into the ML layer, which is where interviews probe and where cold read-write fluency gets rebuilt.
+The project is scoped as a single, complete pipeline (data ingestion through a leakage-safe, prospectively-validated model) rather than several smaller, disconnected pieces. The orchestration layer (Nextflow on AWS Batch) is the delivery mechanism; the hand-coded effort is concentrated in the ML layer, feature engineering, leakage-safe evaluation, and the temporal holdout, since that is where the actual scientific claim is made or broken.
 
 ---
 
@@ -58,7 +54,7 @@ Public data (S3, in-region)
 
 - **Glue + Athena was never built.** The Nextflow pipeline's Parquet output
   is read directly by `ml/build_features.py` with pandas; there is no Glue
-  crawler or Athena query layer. See README.md "Future work" for status.
+  crawler or Athena query layer.
 - **No separate on-demand compute environment exists.** `terraform/batch.tf`
   defines one Batch compute environment, type `SPOT`. Every pipeline run,
   annotation and aggregation alike, ran on Spot.
@@ -66,9 +62,9 @@ Public data (S3, in-region)
   `shap.TreeExplainer` call and `bootstrap_stability_selection`, both added
   after the rest of this document was written). See sections 6.2 and 6.5.
 
-### The 100TB story (framed honestly)
+### What was actually demonstrated
 
-Frame as "designed and benchmarked to process 100TB-scale cohort data." Run on a real, meaningful subset, then document the capacity math and Spot-routing economics for full scale. This is the load-testing and capacity-planning muscle already studied, and it is precisely the answer that was missing in the interview that prompted this build. Do not claim a 100TB persistent store; claim a pipeline architected and cost-modeled for it.
+All 22 human autosomes of 1000 Genomes phase 3 (tens of GB of input, not a large-scale cohort by modern genomics standards) processed concurrently on AWS Batch Spot instances, with measured wall clock and cost: 2h32m for the 17 concurrently-run autosomes versus an estimated ~23h run one at a time, under $1 total spend. See section 9 for the full breakdown. The concurrency speedup (roughly 9x, from raising `max_vcpus` from 4 to 8) and the per-chromosome cost basis are the scaling claims this project can actually support; there is no benchmark or capacity model here for cohort sizes beyond what was run.
 
 ### Cost control (near-zero spend)
 
@@ -87,13 +83,13 @@ Run Batch in public subnets and skip the NAT Gateway entirely. Components:
 
 This designs out the number-one cost killer (idle NAT Gateway, ~$32/month for nothing) rather than managing it. It matches the pattern already proven in the existing repo.
 
-Trade-off, and the interview answer: instances have public IPs and are therefore internet-reachable. Mitigate with tight security groups (no inbound rules) and the fact that only public reference data is processed. Framing: "In production I would use private subnets with VPC endpoints; for a cost-optimized portfolio processing public data, public subnets with locked-down security groups avoid the NAT bill for no real risk." This shows awareness of the trade-off rather than ignorance of it.
+Trade-off: instances have public IPs and are therefore internet-reachable. Mitigated with tight security groups (no inbound rules) and the fact that only public reference data is processed. A production deployment handling non-public data would use private subnets with VPC endpoints instead; public subnets with locked-down security groups are a deliberate, cost-motivated choice for this specific case (public data, no inbound access), not a default assumed to be safe everywhere.
 
 ### Infrastructure as code (Terraform)
 
-Provision the durable infra with Terraform: VPC and subnets, Internet Gateway, S3 gateway endpoint, the Batch compute environment and job queues, IAM roles, S3 buckets, Glue. This is a core Cloud Engineer hiring signal and reads as production-minded in a way the console does not. It is also cloud-portable, which suits the breadth of target roles better than CDK or CloudFormation.
+Provision the durable infra with Terraform: VPC and subnets, Internet Gateway, S3 gateway endpoint, the Batch compute environment and job queues, IAM roles, S3 buckets, ECR. Reproducible, version-controlled infrastructure that tears down and rebuilds cleanly, rather than manually clicked-together console resources that are hard to reason about or reverse.
 
-Keep it deliberately minimal. No remote-state backends, workspaces, custom module libraries, or CI integration for a solo project. Flat, readable config that expresses the infra and tears down cleanly. The point is to show IaC fluency, not to build a reusable enterprise module library. If Terraform refactoring is eating days while the ML layer sits untouched, that is the avoidance tripwire firing; stop and ship the science layer.
+Kept deliberately minimal: no remote-state backends, workspaces, custom module libraries, or CI integration. Flat, readable config that expresses the infra directly. The point of this project is the ML layer and the leakage-safe evaluation; the infrastructure exists to support that reliably and cheaply, not to demonstrate infrastructure engineering for its own sake.
 
 ---
 
@@ -121,11 +117,11 @@ Verify the label and gene metadata structure against the pinned Open Targets rel
 
 ## 4. The label (the trap)
 
-The obvious label, predicting the Open Targets association score, is quietly circular: Open Targets computes that score partly from genetic evidence, so the model would predict its own inputs. An interviewer catches this immediately.
+The obvious label, predicting the Open Targets association score, is quietly circular: Open Targets computes that score partly from genetic evidence, so the model would predict its own inputs. This is not a subtle problem, it would be caught by anyone reviewing the design.
 
 **Chosen label:** does this target have a drug at clinical phase >= 1 (or approved)? Pulled from ChEMBL / Open Targets known-drug evidence. All drug and clinical evidence is excluded from features. This predicts a genuine real-world outcome from biology rather than predicting inputs from inputs. A continuous variant (max clinical phase) supports a regression framing.
 
-**Open-world caveat to raise proactively:** absence of a drug does not mean undruggable; it may mean understudied. This is really positive-unlabeled (PU) learning, not clean binary classification. Either handle with a PU approach or define hard negatives carefully and state the open-world assumption explicitly. This is the single hardest design call in the project and the one a sharp interviewer will push hardest on. Do not let it slide.
+**Open-world caveat, stated explicitly rather than left implicit:** absence of a drug does not mean undruggable; it may mean understudied. This is really positive-unlabeled (PU) learning, not clean binary classification. Either handle with a PU approach or define hard negatives carefully and state the open-world assumption explicitly. This is the single hardest design call in the project, and the one most likely to be challenged on review. Do not let it slide.
 
 ---
 
@@ -137,7 +133,7 @@ Aggregated per gene / protein, grouped by source.
 
 **Protein-intrinsic.** Length, domain families, disorder fraction, pocket / structure features derived from AlphaFold. Caution: target-class membership (kinase, GPCR, ion channel) is almost too predictive of tractability and can become a shortcut. Keep it but watch its feature importance.
 
-**Implemented status:** only `protein_length` made it into the actual feature set. `ml/fetch_alphafold.py` has a `--disorder` flag that fetches per-residue pLDDT-based disorder fraction, but it was never run for this project's results, so `disorder_fraction` is not in `training_table.parquet`. Domain families and pocket/structure features were not implemented at all. "Watch its SHAP weight" refers to a tool that also was not implemented; see section 6.2.
+**Implemented status:** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50) are both in the feature set, at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Domain families and pocket/structure features were not implemented. Feature importance is now tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2).
 
 **Network.** PPI centrality from STRING (degree, betweenness), pathway membership. Strong signal but heavily confounded by study bias, since well-studied proteins have more measured interactions.
 
@@ -203,9 +199,9 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 
 ## 7. Division of labor
 
-**Let the orchestration be efficient (home turf):** Nextflow process definitions, Batch queue config, Spot/on-demand routing, Glue/Athena setup.
+**Orchestration:** Nextflow process definitions, Batch queue config, Spot routing (as built, section 2, there is no separate on-demand routing or Glue/Athena layer).
 
-**Hand-code and be ready to defend (interview prep):**
+**Hand-coded, not delegated to a library:**
 - Leakage-safe splitting (gene-family GroupKFold). Implemented.
 - Negative-set / PU handling. Implemented (open-world assumption, section 4).
 - Feature engineering from annotated variants. Implemented.
@@ -217,10 +213,12 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 
 ## 8. Deliverables
 
-1. The repository.
-2. This design doc, committed as design rationale.
-3. An architecture doc with diagram and the scaling / cost math.
-4. A short results writeup: which targets surfaced, performance against the clinical-phase label, study-bias result, Spot strategy savings. Doubles as a LinkedIn post in practitioner voice.
+The original plan, with delivery status noted:
+
+1. The repository. Delivered.
+2. This design doc, as design rationale. Delivered; restructured partway through (section 12) once the results writeup moved to README.md for readability.
+3. An architecture diagram and the scaling / cost math. Delivered: the Mermaid diagram in README.md, cost and scaling numbers in section 9 below.
+4. A results writeup: which genes ranked well, performance against the clinical-phase label, the study-bias result. Delivered in README.md's Results section, with the extended discussion here in section 12.
 
 ---
 
@@ -238,7 +236,7 @@ The reason it is this cheap is the in-region data choice already made: 1000 Geno
 |------|----------|-------|
 | Batch compute (Spot) | $20 to $60 | Annotation is cheap per sample; includes re-runs and debugging |
 | S3 intermediates | $5 to $20 | A few hundred GB for a few weeks, less with lifecycle rules |
-| Glue + Athena | $5 to $15 | Athena over Parquet is pennies; Glue crawlers add a little |
+| Glue + Athena | $5 to $15 | Planning estimate only; this layer was never built (section 2), so this line was never actually incurred |
 | ML training | $0 to $30 | ~20,000 genes x ~100 features fits in laptop memory; train locally for $0 |
 | Egress | $0 | Only if everything stays in-region |
 
@@ -247,11 +245,11 @@ The feature matrix is small enough to train locally or on a tiny EC2 instance. T
 ### The four silent killers (in order of how often they bite)
 
 1. **NAT Gateway (designed out).** Batch in a private subnet usually pulls one in, billing ~$0.045/hr plus data charges whether used or not, ~$32/month idle. This project avoids it entirely by running in public subnets with an S3 gateway endpoint (see section 2 networking). Listed here because it is the most common genomics-on-AWS cost leak and the reason the public-subnet choice was made.
-2. **Idle SageMaker notebook.** Spun up, walked away from, billed hourly all weekend. If used at all, stop instances when done. Better: skip SageMaker for training and use it only if wanted on the resume.
+2. **Idle SageMaker notebook.** Spun up, walked away from, billed hourly all weekend. If used at all, stop instances when done. This project skips SageMaker entirely; the feature matrix is small enough to train locally for $0.
 3. **Accidental egress.** Pulling large data out of AWS is ~$0.09/GB. One TB down is ~$90 instantly. Rule: the data never leaves the region, only small results do.
 4. **Forgetting Spot.** Running parallel, restartable steps on-demand instead of Spot can 3x to 4x the compute line for no benefit.
 
-### Day-one setup (both already familiar from CCP)
+### Day-one setup
 
 - **AWS Budgets alert at $50.** Email warning before anything surprising happens. This alone makes the worst cases nearly impossible.
 - **Tags on every resource.** Makes spend attributable at a glance. Terraform makes this trivial via default tags.
@@ -259,28 +257,37 @@ The feature matrix is small enough to train locally or on a tiny EC2 instance. T
 
 ### Framing for the writeup
 
-State it as "ran the live benchmark for under $X, with full-100TB cost modeled at $Y." That is itself a credible FinOps detail interviewers like to see, and it ties back to the capacity-math story in section 2.
+State only what was measured: the full 22-autosome run cost under $1, with the concurrency speedup and per-chromosome cost basis documented above. There is no larger-scale cost model behind this figure; it is not an extrapolation to a bigger dataset, it is the actual measured cost of the actual data processed.
 
 ---
 
-## 10. Timeline (3 to 4 weeks, part-time)
+## 10. Timeline (3 to 4 weeks, part-time, original estimate)
 
-| Week | Focus |
+| Week | Focus (as planned) |
 |------|-------|
 | 1 | Infra + data ingestion + one Nextflow process running on Batch |
-| 2 | Full annotation pipeline + Glue/Athena evidence layer |
+| 2 | Full annotation pipeline (Glue/Athena evidence layer was planned here; never built, section 2) |
 | 3 | Hand-coded ML layer (features, leakage-safe eval, stability selection, SHAP) |
 | 4 | Scaling benchmark, cost writeup, docs, polish |
 
+This was the original estimate, not a tracked actual. The repository's commit
+history spans roughly three weeks (first commit to the temporal holdout and
+final writeup), close to the estimate, though the actual work did not follow
+these four weekly buckets in order; the ML layer, evaluation methodology, and
+scaling benchmark were built and revised iteratively rather than in four
+discrete weekly phases.
+
 ---
 
-## 11. Open design calls to resolve during build
+## 11. Open design calls, as resolved
 
-- Negative-set definition / PU strategy (section 4). Highest priority.
-- Exact clinical-phase cutoff for the label and for the temporal holdout.
-- Gene-family grouping source (HGNC groups vs sequence-similarity clustering).
-- Subset size for the live run vs the scaling-math extrapolation.
-- Current Open Targets schema version and field mappings.
+The original open list from planning, with how each was actually resolved:
+
+- **Negative-set definition / PU strategy** (section 4). Resolved: open-world assumption stated explicitly, no synthetic hard-negative construction; absence of a drug is treated as unlabeled, not negative, throughout.
+- **Exact clinical-phase cutoff for the label and for the temporal holdout.** Resolved: clinical phase >= 1 (or approved) for both the main label and the temporal holdout's cutoff-release and future-release labels.
+- **Gene-family grouping source.** Resolved: HGNC gene groups (`ml/gene_families.py`), not sequence-similarity clustering.
+- **Subset size for the live run.** Resolved: all 22 autosomes, not a smaller subset; there is no separate scaling-math extrapolation beyond what was measured (section 9).
+- **Open Targets schema version.** Resolved: 24.09 pinned for the main label and ablation; 21.06 and 26.06 for the temporal holdout's cutoff and future releases respectively (section 6.4).
 
 ---
 
