@@ -18,10 +18,6 @@ Target identification is the highest-value and highest-failure decision in drug 
 
 ## Architecture
 
-![Architecture: 1000 Genomes through AWS Batch (PREPARE, ANNOTATE, BURDEN, COLLECT) to the local feature matrix, GroupKFold split, ablation, and ranked target list, with the temporal holdout as a separate branch](figures/architecture.png)
-
-Regenerate with `python3 make_architecture_diagram.py` (requires `brew install graphviz` and `pip install diagrams`); writes `figures/architecture.png`. Both the script and the image are committed, so the diagram is reproducible rather than a one-off export.
-
 Networking uses public subnets with an Internet Gateway and an S3 Gateway VPC Endpoint, deliberately avoiding a NAT Gateway for cost. All infrastructure is provisioned with Terraform.
 
 The original design (DESIGN.md section 2) planned a Glue + Athena tabular
