@@ -2,9 +2,10 @@
 # Download a 1000 Genomes subset for a single chromosome.
 #
 # Usage: fetch_1000genomes.sh [chrom]
-#   chrom defaults to 22 (smallest autosome, used for the single-sample
-#   DAG-validation run). Pass any autosome number 1-22 to fetch that
-#   chromosome instead, e.g. fetch_1000genomes.sh 1
+#   chrom defaults to 22 (smallest autosome, used for the single-chromosome
+#   DAG-validation run; the VCF covers all 2,504 1000 Genomes samples for
+#   that chromosome, not one sample). Pass any autosome number 1-22 to fetch
+#   that chromosome instead, e.g. fetch_1000genomes.sh 1
 #
 # Source: s3://1000genomes (AWS Open Data, us-east-1).
 # Run this script from an EC2 instance or AWS CloudShell in us-east-1 so

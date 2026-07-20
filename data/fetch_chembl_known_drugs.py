@@ -22,7 +22,7 @@ Fields we use (current OT schema, 24.x):
 Idempotent: each Parquet partition is skipped if already present.
 
 Usage:
-    python3 data/fetch_chembl_known_drugs.py [--release 24.12] [--dest data/cache]
+    python3 data/fetch_chembl_known_drugs.py [--release 24.09] [--dest data/cache]
 """
 
 import argparse
@@ -32,7 +32,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-DEFAULT_RELEASE = "24.12"
+DEFAULT_RELEASE = "24.09"
 FTP_BASE = "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform"
 DATASET_PATH = "output/etl/parquet/knownDrugsAggregated"
 

@@ -8,14 +8,22 @@ Run AFTER:
   python3 ml/fetch_string.py     -- produces ml/cache/string_features.parquet
   python3 ml/fetch_expression.py  -- produces ml/cache/expression_features.parquet
   python3 ml/fetch_publications.py -- produces ml/cache/publication_features.parquet
-  nextflow run pipeline/main.nf, once per chromosome (chr22 first as a smoke
-  test, then chr1/chr2/chr17/chr19, then the remaining 17 autosomes
-  concurrently via --chroms), plus the merge step that produces
-  results/gene_burden_features_22chrom.parquet -- all 22 autosomes, X/Y
-  out of scope. See the Batch run notes for how these were merged, including
-  the one duplicate-symbol fix (CKS1B: kept the chr1 entry matching its real
-  HGNC location 1q21.3, dropped a spurious chr5 entry that was almost
-  certainly a mislabeled processed pseudogene in the GRCh37 r87 annotation).
+  nextflow run pipeline/main.nf -profile awsbatch --chroms 1,2,...,22 (or
+  any equivalent sequence of runs covering all 22 autosomes; X/Y out of
+  scope). This produces results/gene_burden_features.parquet directly: the
+  pipeline's COLLECT step merges every chromosome fed into that run into one
+  Parquet file, so a single run over all 22 autosomes needs no separate
+  merge step. (If you build up coverage across multiple SEPARATE invocations
+  instead, e.g. a handful of chromosomes at a time, each run's COLLECT
+  overwrites the previous one's output, so those separate outputs do need a
+  manual pandas concat before this script sees the full set. That was how
+  this project's own results/gene_burden_features.parquet was actually
+  assembled: chr22 as a smoke test, then chr1/chr2/chr17/chr19, then the
+  remaining 17 autosomes concurrently via --chroms, concatenated by hand,
+  including one duplicate-symbol fix (CKS1B: kept the chr1 entry matching
+  its real HGNC location 1q21.3, dropped a spurious chr5 entry that was
+  almost certainly a mislabeled processed pseudogene in the GRCh37 r87
+  annotation). A single documented run does not need any of that.)
 
 Output: ml/cache/training_table.parquet
 
@@ -115,7 +123,7 @@ ALPHAFOLD_FILE  = os.path.join(CACHE_DIR, "alphafold_features.parquet")
 STRING_FILE     = os.path.join(CACHE_DIR, "string_features.parquet")
 EXPRESSION_FILE  = os.path.join(CACHE_DIR, "expression_features.parquet")
 PUBLICATION_FILE = os.path.join(CACHE_DIR, "publication_features.parquet")
-BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features_22chrom.parquet")
+BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
 OUT_FILE         = os.path.join(CACHE_DIR, "training_table.parquet")
 
 GNOMAD_FEAT_COLS     = ["pLI", "loeuf", "oe_lof", "oe_mis"]
@@ -151,7 +159,7 @@ def check_inputs():
         (STRING_FILE,    "ml/fetch_string.py"),
         (EXPRESSION_FILE, "ml/fetch_expression.py"),
         (PUBLICATION_FILE, "ml/fetch_publications.py"),
-        (BURDEN_FILE,    "nextflow run pipeline/main.nf per chromosome (all 22 autosomes), then merge"),
+        (BURDEN_FILE,    "nextflow run pipeline/main.nf -profile awsbatch --chroms 1,...,22"),
     ]:
         if not os.path.exists(path):
             errors.append(f"  missing: {path}  ->  run: {script}")

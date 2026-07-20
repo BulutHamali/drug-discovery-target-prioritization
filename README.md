@@ -10,7 +10,7 @@ Status: pipeline and ML layer both complete and validated, including a prospecti
 2. Runs a Nextflow pipeline on AWS Batch to produce gene-level genetic evidence.
 3. Assembles a per-gene feature matrix (constraint, protein-intrinsic, network, expression).
 4. Trains a leakage-safe model to prioritize genes by druggability, using clinical-phase drug existence as the label.
-5. Outputs a ranked target list with SHAP interpretability and a study-bias analysis.
+5. Outputs a ranked target list with feature-importance-based interpretability and a study-bias analysis.
 
 ## Why it is built this way
 
@@ -21,18 +21,24 @@ Target identification is the highest-value and highest-failure decision in drug 
 ```
 Public data (S3, in-region)
         |
-   Nextflow on AWS Batch
-     - Spot for per-sample parallel steps
-     - On-demand for aggregation
+   Nextflow on AWS Batch (Spot only, all steps)
         |
-   Glue + Athena (tabular evidence layer)
+   Parquet output (results/), read directly by ml/build_features.py
         |
    ML training (target prioritization)
         |
-   Ranked target list + SHAP
+   Ranked target list
 ```
 
 Networking uses public subnets with an Internet Gateway and an S3 Gateway VPC Endpoint, deliberately avoiding a NAT Gateway for cost. All infrastructure is provisioned with Terraform.
+
+The original design (DESIGN.md section 2) planned a Glue + Athena tabular
+evidence layer between the pipeline and ML training. That layer was never
+built: the actual path is simpler, the Nextflow pipeline's Parquet output is
+read directly by `ml/build_features.py` with pandas, with no Glue crawler or
+Athena query layer in between. The Batch compute environment is Spot only
+(`terraform/batch.tf`); there is no separate on-demand environment for
+aggregation steps.
 
 ## Repository layout
 
@@ -78,7 +84,7 @@ terraform destroy
 
 ### 2. Run the pipeline
 
-Single-chromosome mode validates the full DAG on one sample inside the default vCPU limit, before any quota increase:
+Single-chromosome mode validates the full DAG on one chromosome (all 2,504 1000 Genomes samples) inside the default vCPU limit, before any quota increase:
 
 ```bash
 # Fetch the chr22 VCF and reference files (run from us-east-1 for zero egress)
@@ -118,7 +124,7 @@ a prerequisite is missing.
 
 ```bash
 # Dependencies (once)
-pip install pandas pyarrow scikit-learn networkx
+pip install pandas pyarrow scikit-learn networkx scipy
 
 # Step 1: download HGNC protein-coding gene universe and build group keys
 # for the family-safe cross-validation split.
@@ -143,7 +149,7 @@ python3 ml/fetch_expression.py
 
 # Step 6: download NCBI gene2pubmed (~272 MB) and compute publication count
 # and first-described year per gene -- the deliberate confounder feature
-# (DESIGN.md section 5), used by the study-bias check in step 9.
+# (DESIGN.md section 5), used by the study-bias check in step 10.
 python3 ml/fetch_publications.py
 
 # Step 7: fetch Open Targets label data (knownDrugsAggregated).
@@ -151,8 +157,9 @@ python3 data/fetch_chembl_known_drugs.py
 
 # Step 8: assemble the training table (gene universe + gnomAD + AlphaFold +
 # STRING + GTEx/DepMap + publication metadata + burden + label). Requires
-# results/gene_burden_features_22chrom.parquet, the merged output of the
-# multi-chromosome pipeline run across all 22 autosomes (step 2 above).
+# results/gene_burden_features.parquet, produced directly by COLLECT in the
+# multi-chromosome pipeline run across all 22 autosomes (step 2 above); a
+# single run over all 22 chromosomes needs no separate merge step.
 python3 ml/build_features.py
 
 # Step 9: GroupKFold split on gene family -- prevents paralog leakage.
@@ -182,7 +189,7 @@ Outputs:
 - `ml/cache/string_features.parquet` -- PPI degree and betweenness (STRING v12)
 - `ml/cache/expression_features.parquet` -- tissue-specificity (tau, GTEx) and essentiality (DepMap)
 - `ml/cache/publication_features.parquet` -- pub_count and year_first_described (NCBI gene2pubmed)
-- `ml/cache/training_table.parquet` -- full feature matrix, 19,296 genes. Burden features (n_rare, n_lof) cover 16,725 genes (86.68% of the protein-coding universe, 90.9% of the autosome-eligible universe), the rest zero-filled per the documented missing-data convention.
+- `ml/cache/training_table.parquet` -- full feature matrix, 19,296 genes. Burden features (n_rare, n_lof) cover 16,725 genes (86.68% of the protein-coding universe, 91.0% of the autosome-eligible universe), the rest zero-filled per the documented missing-data convention.
 - `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
 - `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks for whichever `--feature-set` was last run
 
@@ -245,13 +252,19 @@ genuine null; the median split resolves it.
 ### Q2: do discovery-history features add information beyond mechanistic biology?
 
 **Yes, measurably.** Paired bootstrap comparison of `biology_only` vs.
-`no_pubcount` on identical folds: mean difference -8.33, 95% CI
-[-16.84, -0.03], sign test 1-4 (one fold favored `biology_only`, four
-favored `no_pubcount`). The median-split CIs for the two variants do not
-overlap either: `biology_only` [2.12, 3.64] vs. `all_features` [3.98, 7.25].
-Both are genuinely different tests reaching the same conclusion: adding
-`pub_count`, `year_first_described`, and STRING centrality back in improves
-ranking performance by more than sampling noise can explain.
+`no_pubcount` on identical folds, computed on the low-publication-tercile
+lift (not the median split): mean difference -8.33, 95% CI [-16.84, -0.03],
+sign test 1-4 (one fold favored `biology_only`, four favored `no_pubcount`).
+Note precisely what this isolates: neither variant has `pub_count` itself,
+`no_pubcount` differs from `biology_only` only by retaining
+`year_first_described` and STRING centrality, so this specific result is the
+measured value of those two discovery-history features alone, not of
+`pub_count`. The broader, full add-everything-back comparison is the
+median-split non-overlap: `biology_only` [2.12, 3.64] vs. `all_features`
+[3.98, 7.25], which does include `pub_count`. Together, two different tests
+on two different comparisons reach the same conclusion: discovery-history
+features measurably improve ranking performance beyond mechanistic biology
+alone, by more than sampling noise can explain.
 
 ### Open question: how much of that benefit is study bias vs. genuine biology?
 
@@ -322,7 +335,7 @@ project (2.0% at chr22-only, 29.3% at 5 chromosomes, 86.68% at all 22
 autosomes), `n_rare`'s feature importance in `biology_only` climbed
 monotonically: 0.0112 -> 0.0352 -> 0.0714. The same monotonic climb held
 across all four ablation variants, not just `biology_only`. Burden coverage:
-86.68% of the full protein-coding universe (16,725 / 19,296 genes), 90.9%
+86.68% of the full protein-coding universe (16,725 / 19,296 genes), 91.0%
 of the autosome-eligible universe (excludes X, Y, and MT, which the 1000
 Genomes autosome run does not cover).
 
@@ -369,6 +382,27 @@ DESIGN.md section 9.
   and the genetic-evidence check's top-50 slice do not, and are reported as
   such rather than dressed up.
 
+### Future work
+
+Three things from the original design (DESIGN.md) that were planned but not
+built, listed here rather than silently dropped:
+
+- **SHAP interpretability.** The current interpretability story is
+  `GradientBoostingClassifier`'s built-in `feature_importances_`, used
+  throughout the Results section above. SHAP values (DESIGN.md sections 6.2
+  and 7) were never implemented; the features are structured to support it
+  later (no target leakage, stable column set) but it is not in the code.
+- **Bootstrap stability selection** (DESIGN.md section 6.5): resample, refit,
+  and keep only features selected in more than X% of runs. Not implemented;
+  the repeated-CV analysis (DESIGN.md section 6.6) does something adjacent
+  (varies fold assignment, not the training sample itself) but is not a
+  substitute.
+- **AlphaFold `disorder_fraction`.** `ml/fetch_alphafold.py` supports fetching
+  per-residue pLDDT-based disorder fraction via `--disorder` (~50 min, 20k
+  requests), but this flag was never run and `disorder_fraction` is not in
+  `training_table.parquet` or any of the results above. Only `protein_length`
+  made it into the actual feature set.
+
 ## Cost
 
 Target $30 to $80 for the full project by the original planning estimate.
@@ -380,7 +414,7 @@ $50 is set on day one. Full breakdown in `DESIGN.md` section 9.
 ## Status checklist
 
 - [x] Terraform stack applies and destroys cleanly
-- [x] Pipeline validated end to end on one sample
+- [x] Pipeline validated end to end on one chromosome (all 2,504 samples)
 - [x] Data layer (Open Targets, ChEMBL) built and labels defined
 - [x] ML layer built and validated locally
 - [x] Scaling benchmark run after quota increase (22 autosomes, concurrent Batch execution, under $1, 2h32m)

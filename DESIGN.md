@@ -22,7 +22,7 @@ The orchestration layer is home turf (Nextflow Ambassador) and should not absorb
 
 ## 2. Architecture
 
-Canonical AWS genomics reference architecture:
+Canonical AWS genomics reference architecture, as originally planned:
 
 ```
 Public data (S3, in-region)
@@ -39,6 +39,34 @@ Public data (S3, in-region)
         |
    Ranked target list + SHAP interpretability
 ```
+
+**As actually built**, this simplified in three ways, tracked here rather
+than left for the reader to discover by diffing the diagram against the
+code:
+
+```
+Public data (S3, in-region)
+        |
+   Nextflow on AWS Batch (Spot only, all steps)
+        |
+   Parquet output (results/), read directly by ml/build_features.py
+        |
+   ML training (target prioritization)
+        |
+   Ranked target list (feature-importance interpretability, not SHAP)
+```
+
+- **Glue + Athena was never built.** The Nextflow pipeline's Parquet output
+  is read directly by `ml/build_features.py` with pandas; there is no Glue
+  crawler or Athena query layer. See README.md "Future work" for status.
+- **No separate on-demand compute environment exists.** `terraform/batch.tf`
+  defines one Batch compute environment, type `SPOT`. Every pipeline run,
+  annotation and aggregation alike, ran on Spot.
+- **SHAP was never implemented.** Interpretability is
+  `GradientBoostingClassifier`'s built-in `feature_importances_`, used
+  throughout the study-bias analysis (section 6.2) and the results in
+  README.md. See section 6.2, 6.5, and 7 below, and README.md "Future work",
+  for the full list of what was planned here but deferred.
 
 ### The 100TB story (framed honestly)
 
@@ -89,7 +117,7 @@ Open Targets is used for the label only. The `knownDrugsAggregated` table provid
 
 Genetic-association evidence from `associationByDatatypeDirect` (filtered to `genetic_association`, with `known_drug` and `literature` datatypes excluded) is deferred to a possible v2. For v1 the feature set is as listed in section 5: gnomAD constraint already captures the genetic signal that matters, and a clean, defensible feature set is worth more than one additional source at this stage.
 
-Verify the label and gene metadata structure against the pinned Open Targets release (24.12). Schema fields shift between releases.
+Verify the label and gene metadata structure against the pinned Open Targets release (24.09). Schema fields shift between releases.
 
 ---
 
@@ -109,7 +137,9 @@ Aggregated per gene / protein, grouped by source.
 
 **Genetic constraint and variant burden.** gnomAD constraint (pLI, LOEUF), rare / LoF variant burden, observed-vs-expected ratios, conservation. This is where the Nextflow pipeline output feeds the model, tying the project together. Among the most predictive and most biologically honest features.
 
-**Protein-intrinsic.** Length, domain families, disorder fraction, pocket / structure features derived from AlphaFold. Caution: target-class membership (kinase, GPCR, ion channel) is almost too predictive of tractability and can become a shortcut. Keep it but watch its SHAP weight.
+**Protein-intrinsic.** Length, domain families, disorder fraction, pocket / structure features derived from AlphaFold. Caution: target-class membership (kinase, GPCR, ion channel) is almost too predictive of tractability and can become a shortcut. Keep it but watch its feature importance.
+
+**Implemented status:** only `protein_length` made it into the actual feature set. `ml/fetch_alphafold.py` has a `--disorder` flag that fetches per-residue pLDDT-based disorder fraction, but it was never run for this project's results, so `disorder_fraction` is not in `training_table.parquet`. Domain families and pocket/structure features were not implemented at all. "Watch its SHAP weight" refers to a tool that also was not implemented; see section 6.2.
 
 **Network.** PPI centrality from STRING (degree, betweenness), pathway membership. Strong signal but heavily confounded by study bias, since well-studied proteins have more measured interactions.
 
@@ -135,6 +165,8 @@ The naive failure mode of every target-prediction model is learning "is this gen
 
 If the model still ranks well among understudied genes, it is doing real work. Lead the writeup with this.
 
+**Implemented status:** the SHAP check was never built (deferred, see README.md "Future work"). The bin-based check was implemented and substantially extended beyond this original two-line plan: see section 6.6 below for the full method (pooled and paired bootstrap, sign test, repeated CV, median split) and README.md's Results section for what it found. The feature-importance mechanism actually used throughout is `GradientBoostingClassifier`'s built-in `feature_importances_`, not SHAP.
+
 ### 6.3 Ranking metrics, not just AUC
 Prioritization is a top-of-list problem, like virtual screening; nobody pursues 8,000 targets. Report:
 - PR-AUC (positives are rare).
@@ -150,6 +182,8 @@ Train on targets that reached the clinic before a cutoff year, then predict whic
 
 ### 6.5 Bootstrap stability selection
 Resample, refit, keep features selected in more than X percent of runs. Reports robust biology and guards against overfitting to the famous-gene signal. SHAP + bootstrap approach drops in cleanly here.
+
+**Implemented status:** not implemented, deferred (see README.md "Future work"). The repeated-CV analysis in section 6.6 varies fold assignment across 10 seeded repeats, which is adjacent but not a substitute: it tests whether the *evaluation* is stable to which genes land in which fold, not whether *feature selection* is stable to which genes land in the training sample.
 
 ### 6.6 Evaluation methodology, as implemented
 
@@ -174,12 +208,12 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 **Let the orchestration be efficient (home turf):** Nextflow process definitions, Batch queue config, Spot/on-demand routing, Glue/Athena setup.
 
 **Hand-code and be ready to defend (interview prep):**
-- Leakage-safe splitting (gene-family GroupKFold).
-- Negative-set / PU handling.
-- Feature engineering from annotated variants.
-- Bootstrap stability selection.
-- SHAP interpretability and the study-bias analysis.
-- Ranking metric implementation (enrichment factor, precision@k).
+- Leakage-safe splitting (gene-family GroupKFold). Implemented.
+- Negative-set / PU handling. Implemented (open-world assumption, section 4).
+- Feature engineering from annotated variants. Implemented.
+- Bootstrap stability selection. Not implemented, deferred (section 6.5, README.md "Future work").
+- SHAP interpretability and the study-bias analysis. SHAP not implemented, deferred; the study-bias analysis is implemented using `feature_importances_` instead (section 6.2, section 6.6).
+- Ranking metric implementation (enrichment factor, precision@k). Implemented.
 
 ---
 

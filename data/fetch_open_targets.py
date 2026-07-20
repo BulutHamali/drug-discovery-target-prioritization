@@ -15,7 +15,7 @@ Idempotent: each Parquet partition is skipped if already present locally.
 Re-run freely.
 
 Usage:
-    python3 data/fetch_open_targets.py [--release 24.12] [--dest data/cache]
+    python3 data/fetch_open_targets.py [--release 24.09] [--dest data/cache]
 
 Set DATA_CACHE_DIR env var as an alternative to --dest.
 """
@@ -28,7 +28,7 @@ from pathlib import Path
 
 # Latest stable release as of project start. Pin this; schema shifts between
 # releases and the ML layer is built against a specific field set.
-DEFAULT_RELEASE = "24.12"
+DEFAULT_RELEASE = "24.09"
 
 FTP_BASE = "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform"
 
