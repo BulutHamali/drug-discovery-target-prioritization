@@ -11,7 +11,8 @@ Why ranking metrics instead of accuracy or ROC-AUC:
   are the top-k predictions enriched for real drug targets?
 
 Why GradientBoostingClassifier:
-  Interpretable (tree feature importances, SHAP-ready), handles mixed
+  Interpretable (tree feature importances, plus exact SHAP values via
+  shap.TreeExplainer), handles mixed
   numeric/binary features without scaling, robust to the ~7.8% class imbalance
   (predict_proba is well-calibrated under subsample). A linear model would be
   the next check; tree beats it here because pLI and loeuf have non-linear
@@ -62,6 +63,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import shap
 from scipy.stats import spearmanr
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.metrics import average_precision_score
@@ -73,13 +75,18 @@ TABLE_FILE  = os.path.join(CACHE_DIR, "training_table.parquet")
 FOLDS_FILE  = os.path.join(CACHE_DIR, "cv_folds.parquet")
 OOS_FILE    = os.path.join(CACHE_DIR, "oos_predictions.parquet")
 
-# The full v1 feature set (DESIGN.md section 5).
+# The full v1 feature set (DESIGN.md section 5), plus disorder_fraction
+# (AlphaFold pLDDT-based disorder, DESIGN.md section 5's "protein-intrinsic"
+# group), added once ml/fetch_alphafold.py was run with --disorder. It is a
+# biology feature like protein_length, not part of the publication/STRING
+# fame-confound story, so it stays in every FEATURE_SETS variant below,
+# including biology_only.
 FULL_FEATURE_COLS = [
     "pLI", "loeuf", "oe_lof", "oe_mis", "n_rare", "n_lof",
-    "protein_length", "ppi_degree", "ppi_betweenness",
+    "protein_length", "disorder_fraction", "ppi_degree", "ppi_betweenness",
     "tau", "essentiality_score",
     "pub_count", "year_first_described",
-    "has_gnomad", "has_burden", "has_alphafold", "has_string",
+    "has_gnomad", "has_burden", "has_alphafold", "has_disorder", "has_string",
     "has_tau", "has_essentiality", "has_pub_count", "has_year_described",
 ]
 
@@ -482,6 +489,49 @@ def run_repeated_cv(feature_cols, df, group_assignment, group_label, n_repeats=1
     return np.array(repeat_lifts)
 
 
+def bootstrap_stability_selection(feature_cols, df, n_boot=50, top_k=10, seed=RANDOM_SEED):
+    """
+    DESIGN.md section 6.5, implemented: resample the full training set with
+    replacement, refit, and record which features land in the top `top_k` by
+    feature_importances_ each time. Reports the fraction of `n_boot` resamples
+    each feature was selected in. Features selected in most runs are robust
+    signal; features that only show up occasionally are more likely
+    resampling noise than stable biology.
+
+    This is deliberately a plain row-level bootstrap (sample with
+    replacement, ignore gene-family grouping), NOT GroupKFold. The question
+    here is whether a feature's importance is stable across resamples of the
+    training set, not leakage-safe generalization to held-out genes, so there
+    is no test set and no group-overlap concern the way there is everywhere
+    else in this file. The model's own random_state stays fixed at `seed`
+    throughout (MODEL_PARAMS); the only source of variation across the
+    `n_boot` iterations is which genes happen to be resampled.
+
+    Returns a dict {feature: fraction_selected}, sorted by fraction
+    descending is the caller's job (matches the style of the other
+    print-facing helpers in this file).
+    """
+    X = df[feature_cols].values
+    y = df["label"].values
+    n = len(df)
+    rng = np.random.default_rng(seed)
+
+    selection_counts = {f: 0 for f in feature_cols}
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        clf = GradientBoostingClassifier(**MODEL_PARAMS)
+        clf.fit(X[idx], y[idx])
+        top_features = sorted(
+            zip(feature_cols, clf.feature_importances_),
+            key=lambda t: t[1],
+            reverse=True,
+        )[:top_k]
+        for feat, _ in top_features:
+            selection_counts[feat] += 1
+
+    return {f: c / n_boot for f, c in selection_counts.items()}
+
+
 # ── Core training/eval for one feature set ──────────────────────────────────
 
 def run_variant(name, feature_cols, df, fold_v, n_folds, tercile_assignment, median_assignment, verbose=True):
@@ -583,6 +633,23 @@ def run_variant(name, feature_cols, df, fold_v, n_folds, tercile_assignment, med
         reverse=True,
     )
 
+    # SHAP importances on the same full-data model (DESIGN.md 6.2/7, deferred
+    # until now). TreeExplainer is exact and fast for gradient-boosted trees,
+    # no sampling/approximation needed. Reported as mean |SHAP value| per
+    # feature (average magnitude of that feature's contribution to the
+    # predicted log-odds, across all 19,296 genes), which is comparable in
+    # spirit to feature_importances_ but reflects actual per-gene attribution
+    # rather than split-count/impurity-reduction bookkeeping. Kept alongside
+    # feature_importances_ rather than replacing it: they usually agree, and
+    # a case where they disagree is itself diagnostic (e.g. a feature with
+    # high impurity-based importance but low actual prediction impact).
+    shap_values = shap.TreeExplainer(clf_full).shap_values(X)
+    shap_importances = sorted(
+        zip(feature_cols, np.abs(shap_values).mean(axis=0)),
+        key=lambda t: t[1],
+        reverse=True,
+    )
+
     pub_count = df.set_index("symbol").loc[oos["symbol"], "pub_count"].values
     rho, pval = spearmanr(oos["score"].values, np.log1p(pub_count))
     tercile = group_pr_auc_lift(oos, tercile_assignment, ["low", "medium", "high"])
@@ -630,6 +697,7 @@ def run_variant(name, feature_cols, df, fold_v, n_folds, tercile_assignment, med
         "mean_pk": mean_pk,
         "mean_ef": mean_ef,
         "top10_importances": importances[:10],
+        "shap_top10_importances": shap_importances[:10],
         "burden_importance_spread": burden_importance_spread,
         "low_tercile_per_fold": low_per_fold,
         "low_tercile_ci_blockfold": {
@@ -651,7 +719,7 @@ def run_variant(name, feature_cols, df, fold_v, n_folds, tercile_assignment, med
 
 # ── Comparison table for --compare ───────────────────────────────────────────
 
-def print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name=None):
+def print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name=None, stability_by_name=None):
     print("\n" + "=" * 78)
     print("FEATURE-SET ABLATION (DESIGN.md section 6.2)")
     print("=" * 78)
@@ -813,6 +881,11 @@ def print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name=Non
                     f"    {feat:<10}  mean={s['mean']:.4f}  std={s['std']:.4f}  "
                     f"range=[{s['min']:.4f}, {s['max']:.4f}]"
                 )
+        shap_max = max((v for _, v in r["shap_top10_importances"]), default=0.0)
+        print(f"  Top 10 SHAP importances, {name} (mean |SHAP value|, same full-data model):")
+        for feat, imp in r["shap_top10_importances"]:
+            bar = "#" * int((imp / shap_max) * 60) if shap_max > 0 else ""
+            print(f"    {feat:<20}  {imp:.4f}  {bar}")
         print()
 
     print("\n" + "=" * 78)
@@ -869,6 +942,27 @@ def print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name=Non
                 f"{lifts.min():>7.2f}  {lifts.max():>7.2f}"
             )
         print()
+
+    if stability_by_name:
+        print("\n" + "=" * 78)
+        print("BOOTSTRAP STABILITY SELECTION (DESIGN.md 6.5)")
+        print("=" * 78)
+        print(
+            "50 row-level bootstrap resamples of the full training set (NOT\n"
+            "GroupKFold, see bootstrap_stability_selection docstring), refit each\n"
+            "time, top-10 features by feature_importances_ recorded per resample.\n"
+            "Fraction shown is how often that feature landed in the top 10.\n"
+            "Features selected in more than 70% of resamples are the stable,\n"
+            "resampling-robust signal; below that, treat the ranking as noisier.\n"
+        )
+        for name, stability in stability_by_name.items():
+            stable = sorted(stability.items(), key=lambda t: t[1], reverse=True)
+            stable = [(f, frac) for f, frac in stable if frac > 0][:10]
+            print(f"  {name}:")
+            for feat, frac in stable:
+                tag = "STABLE" if frac > 0.70 else ""
+                print(f"    {feat:<20}  {frac:.2f}  {tag}")
+            print()
 
     print("\n" + "=" * 78)
     print("SECONDARY DECISION CRITERION (tercile, underpowered, kept for continuity)")
@@ -1049,7 +1143,13 @@ def main():
             print(f"  repeated CV: {name}")
             repeated_cv_by_name[name] = run_repeated_cv(cols, df, tercile_assignment, "low")
 
-        print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name)
+        print("\nrunning bootstrap stability selection (50 resamples x 4 variants, DESIGN.md 6.5)...")
+        stability_by_name = {}
+        for name, cols in FEATURE_SETS.items():
+            print(f"  stability selection: {name}")
+            stability_by_name[name] = bootstrap_stability_selection(cols, df)
+
+        print_comparison_table(results_by_name, baseline_pr, repeated_cv_by_name, stability_by_name)
         print_descriptive_correlations(df)
         return
 
@@ -1070,6 +1170,12 @@ def main():
     print(f"\nFeature importances ({name}, full-data model, for study-bias diagnostic):")
     for feat, imp in result["top10_importances"]:
         bar = "#" * int(imp * 60)
+        print(f"  {feat:<20}  {imp:.4f}  {bar}")
+
+    shap_max = max((v for _, v in result["shap_top10_importances"]), default=0.0)
+    print(f"\nSHAP importances ({name}, same full-data model, mean |SHAP value|):")
+    for feat, imp in result["shap_top10_importances"]:
+        bar = "#" * int((imp / shap_max) * 60) if shap_max > 0 else ""
         print(f"  {feat:<20}  {imp:.4f}  {bar}")
 
     print_gnomad_proxy_check(df, oos)

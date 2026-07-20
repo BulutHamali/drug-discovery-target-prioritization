@@ -53,7 +53,7 @@ Public data (S3, in-region)
         |
    ML training (target prioritization)
         |
-   Ranked target list (feature-importance interpretability, not SHAP)
+   Ranked target list (feature_importances_ and SHAP, section 6.2)
 ```
 
 - **Glue + Athena was never built.** The Nextflow pipeline's Parquet output
@@ -62,11 +62,9 @@ Public data (S3, in-region)
 - **No separate on-demand compute environment exists.** `terraform/batch.tf`
   defines one Batch compute environment, type `SPOT`. Every pipeline run,
   annotation and aggregation alike, ran on Spot.
-- **SHAP was never implemented.** Interpretability is
-  `GradientBoostingClassifier`'s built-in `feature_importances_`, used
-  throughout the study-bias analysis (section 6.2) and the results in
-  README.md. See section 6.2, 6.5, and 7 below, and README.md "Future work",
-  for the full list of what was planned here but deferred.
+- **SHAP and bootstrap stability selection are implemented** (`ml/train_eval.py`'s
+  `shap.TreeExplainer` call and `bootstrap_stability_selection`, both added
+  after the rest of this document was written). See sections 6.2 and 6.5.
 
 ### The 100TB story (framed honestly)
 
@@ -165,7 +163,7 @@ The naive failure mode of every target-prediction model is learning "is this gen
 
 If the model still ranks well among understudied genes, it is doing real work. Lead the writeup with this.
 
-**Implemented status:** the SHAP check was never built (deferred, see README.md "Future work"). The bin-based check was implemented and substantially extended beyond this original two-line plan: see section 6.6 below for the full method (pooled and paired bootstrap, sign test, repeated CV, median split) and README.md's Results section for what it found. The feature-importance mechanism actually used throughout is `GradientBoostingClassifier`'s built-in `feature_importances_`, not SHAP.
+**Implemented status:** both checks are implemented. SHAP values are computed via `shap.TreeExplainer` on the same full-data model already fit for `feature_importances_` (`ml/train_eval.py`, printed as "SHAP importances" alongside the existing top-10 `feature_importances_` list in every run), so the two importance rankings can be compared directly; they largely agree, which is itself a useful cross-check. The bin-based check was implemented and substantially extended beyond this original two-line plan: see section 6.6 below for the full method (pooled and paired bootstrap, sign test, repeated CV, median split) and README.md's Results section for what it found.
 
 ### 6.3 Ranking metrics, not just AUC
 Prioritization is a top-of-list problem, like virtual screening; nobody pursues 8,000 targets. Report:
@@ -183,7 +181,7 @@ Train on targets that reached the clinic before a cutoff year, then predict whic
 ### 6.5 Bootstrap stability selection
 Resample, refit, keep features selected in more than X percent of runs. Reports robust biology and guards against overfitting to the famous-gene signal. SHAP + bootstrap approach drops in cleanly here.
 
-**Implemented status:** not implemented, deferred (see README.md "Future work"). The repeated-CV analysis in section 6.6 varies fold assignment across 10 seeded repeats, which is adjacent but not a substitute: it tests whether the *evaluation* is stable to which genes land in which fold, not whether *feature selection* is stable to which genes land in the training sample.
+**Implemented status:** implemented (`bootstrap_stability_selection` in `ml/train_eval.py`, run as part of `--compare`). 50 row-level bootstrap resamples of the full training set (deliberately NOT GroupKFold, see the function's docstring: this measures whether a feature's importance is stable under resampling of the training set, not leakage-safe generalization, so grouping by gene family is not the relevant concern here), refit each time, top-10 features by `feature_importances_` recorded per resample. Features selected in more than 70% of resamples are flagged as stable. This is a different axis of robustness than the repeated-CV analysis in section 6.6 (which varies fold assignment across 10 seeded repeats): repeated CV tests whether the *evaluation* is stable to which genes land in which fold, this tests whether *feature selection* is stable to which genes land in the training sample.
 
 ### 6.6 Evaluation methodology, as implemented
 
@@ -211,8 +209,8 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 - Leakage-safe splitting (gene-family GroupKFold). Implemented.
 - Negative-set / PU handling. Implemented (open-world assumption, section 4).
 - Feature engineering from annotated variants. Implemented.
-- Bootstrap stability selection. Not implemented, deferred (section 6.5, README.md "Future work").
-- SHAP interpretability and the study-bias analysis. SHAP not implemented, deferred; the study-bias analysis is implemented using `feature_importances_` instead (section 6.2, section 6.6).
+- Bootstrap stability selection. Implemented (section 6.5).
+- SHAP interpretability and the study-bias analysis. Both implemented (section 6.2, section 6.6); SHAP alongside `feature_importances_`, not instead of it.
 - Ranking metric implementation (enrichment factor, precision@k). Implemented.
 
 ---

@@ -384,24 +384,26 @@ DESIGN.md section 9.
 
 ### Future work
 
-Three things from the original design (DESIGN.md) that were planned but not
-built, listed here rather than silently dropped:
+Two things from the original design (DESIGN.md) were flagged as planned but
+not built as of the previous pass through this document: SHAP
+interpretability (DESIGN.md sections 6.2 and 7) and bootstrap stability
+selection (DESIGN.md section 6.5). Both are now implemented in
+`ml/train_eval.py`: SHAP values via `shap.TreeExplainer` on the same
+full-data model used for `feature_importances_`, printed alongside it in
+every run; bootstrap stability selection as 50 row-level resamples of the
+full training set, refit each time, reporting how often each feature lands
+in the top 10 by `feature_importances_` (features selected in more than 70%
+of resamples flagged as stable). See DESIGN.md sections 6.2 and 6.5 for the
+full method, and the Results section above for what they found.
 
-- **SHAP interpretability.** The current interpretability story is
-  `GradientBoostingClassifier`'s built-in `feature_importances_`, used
-  throughout the Results section above. SHAP values (DESIGN.md sections 6.2
-  and 7) were never implemented; the features are structured to support it
-  later (no target leakage, stable column set) but it is not in the code.
-- **Bootstrap stability selection** (DESIGN.md section 6.5): resample, refit,
-  and keep only features selected in more than X% of runs. Not implemented;
-  the repeated-CV analysis (DESIGN.md section 6.6) does something adjacent
-  (varies fold assignment, not the training sample itself) but is not a
-  substitute.
-- **AlphaFold `disorder_fraction`.** `ml/fetch_alphafold.py` supports fetching
-  per-residue pLDDT-based disorder fraction via `--disorder` (~50 min, 20k
-  requests), but this flag was never run and `disorder_fraction` is not in
-  `training_table.parquet` or any of the results above. Only `protein_length`
-  made it into the actual feature set.
+One item remains:
+
+- **AlphaFold `disorder_fraction`.** `ml/fetch_alphafold.py --disorder`
+  fetches this per-protein from the AlphaFold DB prediction API (roughly
+  90-100 min at a steady rate, longer in practice since the API's actual
+  throughput varies, ~20k requests). Wired into `build_features.py` and
+  `train_eval.py`'s feature set (`FULL_FEATURE_COLS`), pending a full fetch
+  run to populate real values in `training_table.parquet`.
 
 ## Cost
 

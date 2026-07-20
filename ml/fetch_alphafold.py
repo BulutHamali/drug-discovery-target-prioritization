@@ -26,11 +26,19 @@ Join key:
   by convention.
 
 Disorder fraction hook:
-  Download one per-protein confidence JSON from the AlphaFold EBI endpoint:
-    https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-confidence_v4.json
-  For ~20,000 proteins this is ~20,000 HTTP requests (~50 min). Implemented
-  below and gated behind --disorder. Per-protein JSON files are cached so
-  interrupted runs can resume. Pass --disorder to enable.
+  Query one per-protein prediction summary from the AlphaFold DB API:
+    https://alphafold.ebi.ac.uk/api/prediction/{uniprot_id}
+  This returns fractionPlddtVeryLow directly (fraction of residues with
+  pLDDT < 50, AlphaFold's own "very low confidence" bucket boundary), so no
+  per-residue array needs to be fetched or parsed; it is used as
+  disorder_fraction unchanged. (The old versioned bulk file URL,
+  alphafold.ebi.ac.uk/files/AF-{uid}-F1-confidence_v4.json, is dead across
+  every version number as of this writing, 404/NoSuchKey on every request;
+  AlphaFold DB moved to this API. Confirmed via curl against known human
+  UniProt IDs before switching.) For ~20,000 proteins this is ~20,000 HTTP
+  requests. Implemented below and gated behind --disorder. Per-protein JSON
+  responses are cached so interrupted runs can resume. Pass --disorder to
+  enable.
 
 Label independence: protein length and pLDDT-based disorder are intrinsic
   sequence/structure properties. They are derived entirely from genome sequence
@@ -38,7 +46,7 @@ Label independence: protein length and pLDDT-based disorder are intrinsic
   the label source (knownDrugsAggregated). Safe to use as features.
 
 Run:  python3 ml/fetch_alphafold.py
-      python3 ml/fetch_alphafold.py --disorder   # adds ~50 min for pLDDT
+      python3 ml/fetch_alphafold.py --disorder   # adds time for ~20k API calls
 Output: ml/cache/alphafold_features.parquet
 """
 
@@ -62,9 +70,13 @@ UNIPROT_URL = (
 )
 UNIPROT_RAW = os.path.join(CACHE_DIR, "uniprot_human_swissprot.tsv")
 
-# AlphaFold EBI per-protein confidence endpoint.
+# AlphaFold DB per-protein prediction API. Replaces the old versioned bulk
+# file URL (alphafold.ebi.ac.uk/files/AF-{uid}-F1-confidence_v4.json), which
+# is dead (404/NoSuchKey on every version, confirmed by hand before this
+# fix). This endpoint returns fractionPlddtVeryLow directly, no per-residue
+# parsing needed.
 AF_CONF_URL = (
-    "https://alphafold.ebi.ac.uk/files/AF-{uid}-F1-confidence_v4.json"
+    "https://alphafold.ebi.ac.uk/api/prediction/{uid}"
 )
 
 # Residues below this pLDDT score are considered disordered (Jumper et al. 2021).
@@ -116,11 +128,13 @@ def parse_uniprot(tsv_path):
 def fetch_disorder(uniprot_ids, cache_dir):
     """
     [DISORDER HOOK]
-    Fetches per-residue pLDDT from AlphaFold EBI and returns disorder_fraction
-    (fraction of residues with pLDDT < PLDDT_DISORDER_THRESHOLD) per protein.
+    Queries the AlphaFold DB prediction API per protein and returns
+    disorder_fraction = fractionPlddtVeryLow (AlphaFold's own "pLDDT < 50"
+    confidence bucket, matching PLDDT_DISORDER_THRESHOLD exactly), read
+    straight from the API response, no per-residue array needed.
 
-    Per-protein JSON files are cached under cache_dir/af_confidence/ so that
-    interrupted runs can resume without re-downloading completed proteins.
+    Per-protein JSON responses are cached under cache_dir/af_confidence/ so
+    that interrupted runs can resume without re-querying completed proteins.
     """
     conf_dir = os.path.join(cache_dir, "af_confidence")
     os.makedirs(conf_dir, exist_ok=True)
@@ -137,23 +151,22 @@ def fetch_disorder(uniprot_ids, cache_dir):
                 with open(cache_path) as f:
                     data = json.load(f)
             except (json.JSONDecodeError, OSError):
-                data = {}
+                data = None
         else:
             url = AF_CONF_URL.format(uid=uid)
             try:
                 with urllib.request.urlopen(url, timeout=15) as r:
-                    data = json.load(r)
+                    payload = json.load(r)
+                data = payload[0] if isinstance(payload, list) and payload else None
                 with open(cache_path, "w") as f:
                     json.dump(data, f)
-                time.sleep(0.15)  # respect EBI rate limits (~6-7 req/s)
+                time.sleep(0.05)  # respect EBI rate limits
             except Exception:
                 result[uid] = float("nan")
                 continue
 
-        scores = data.get("confidenceScore", [])
-        if scores:
-            n_disordered = sum(1 for v in scores if isinstance(v, (int, float)) and v < PLDDT_DISORDER_THRESHOLD)
-            result[uid] = n_disordered / len(scores)
+        if data and "fractionPlddtVeryLow" in data:
+            result[uid] = data["fractionPlddtVeryLow"]
         else:
             result[uid] = float("nan")
 
@@ -170,7 +183,7 @@ def build(fetch_disorder_flag=False, cache_dir=CACHE_DIR):
     df = parse_uniprot(raw_path)
 
     if fetch_disorder_flag:
-        print(f"\nfetching disorder_fraction from AlphaFold EBI (~50 min) ...")
+        print(f"\nfetching disorder_fraction from AlphaFold DB (roughly 90-100 min at ~0.3s/protein) ...")
         dis = fetch_disorder(df["uniprot_id"].tolist(), cache_dir)
         df["disorder_fraction"] = df["uniprot_id"].map(dis)
         n_dis = df["disorder_fraction"].notna().sum()
@@ -216,7 +229,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--disorder", action="store_true",
-        help="fetch pLDDT-based disorder_fraction from AlphaFold EBI (~50 min, 20k requests)"
+        help="fetch pLDDT-based disorder_fraction from AlphaFold DB (roughly 90-100 min, ~20k requests)"
     )
     ap.add_argument("--cache-dir", default=CACHE_DIR)
     args = ap.parse_args()

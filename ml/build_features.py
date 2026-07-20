@@ -127,7 +127,7 @@ BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
 OUT_FILE         = os.path.join(CACHE_DIR, "training_table.parquet")
 
 GNOMAD_FEAT_COLS     = ["pLI", "loeuf", "oe_lof", "oe_mis"]
-ALPHAFOLD_FEAT_COLS  = ["protein_length"]
+ALPHAFOLD_FEAT_COLS  = ["protein_length", "disorder_fraction"]
 STRING_FEAT_COLS     = ["ppi_degree", "ppi_betweenness"]
 EXPRESSION_FEAT_COLS = ["tau", "essentiality_score"]
 PUBLICATION_FEAT_COLS = ["pub_count", "year_first_described"]
@@ -208,6 +208,17 @@ def load_gnomad():
 
 def load_alphafold():
     df = pd.read_parquet(ALPHAFOLD_FILE)
+    # disorder_fraction only exists if ml/fetch_alphafold.py was run with
+    # --disorder (one API request per protein, ~20k proteins). Degrade
+    # gracefully to fully-missing (has_disorder=0 for everyone) rather than
+    # crash if an older cache without it is present; protein_length is
+    # unaffected either way.
+    missing = [c for c in ALPHAFOLD_FEAT_COLS if c not in df.columns]
+    for col in missing:
+        df[col] = float("nan")
+    if missing:
+        print(f"  NOTE: {ALPHAFOLD_FILE} has no {missing}; treating as fully "
+              f"missing (re-run: python3 ml/fetch_alphafold.py --disorder)")
     return df[["symbol"] + ALPHAFOLD_FEAT_COLS].copy()
 
 
@@ -243,15 +254,26 @@ def fill_gnomad_missing(df):
     return df, medians
 
 
+ALPHAFOLD_FLAG_COLS = {"protein_length": "has_alphafold", "disorder_fraction": "has_disorder"}
+
+
 def fill_alphafold_missing(df):
     """
-    Same median-fill approach as fill_gnomad_missing: has_alphafold=1 means
-    real UniProt data; has_alphafold=0 means median-imputed protein_length.
+    protein_length and disorder_fraction are independently missing: the
+    former comes from the always-run UniProt Swiss-Prot fetch, the latter
+    only exists at all if fetch_alphafold.py was run with --disorder, and
+    even then a handful of individual pLDDT fetches can fail. Same
+    per-column flag + median pattern as fill_expression_missing.
     """
-    df["has_alphafold"] = df["protein_length"].notna().astype(int)
     medians = {}
     for col in ALPHAFOLD_FEAT_COLS:
-        med = df.loc[df["has_alphafold"] == 1, col].median()
+        flag = ALPHAFOLD_FLAG_COLS[col]
+        df[flag] = df[col].notna().astype(int)
+        observed = df.loc[df[flag] == 1, col]
+        # Guard against the (only if --disorder was never run) case where
+        # every value is missing: fillna(NaN) would leave the column all-NaN
+        # and break the model fit downstream.
+        med = observed.median() if len(observed) > 0 else 0.0
         medians[col] = med
         df[col] = df[col].fillna(med)
     return df, medians
@@ -446,6 +468,14 @@ def build():
     print(f"       {n_no_af:,} genes median-imputed: "
           f"{ {k: round(v, 3) for k, v in alphafold_medians.items()} }")
 
+    n_with_disorder = df["has_disorder"].sum()
+    if n_with_disorder > 0:
+        print(f"[INFO] AlphaFold disorder_fraction coverage: {n_with_disorder:,} genes "
+              f"({n_with_disorder/len(df):.1%} of universe)")
+    else:
+        print("[INFO] AlphaFold disorder_fraction: not fetched (run with --disorder), "
+              "fully median-imputed, has_disorder=0 for every gene")
+
     # Check 4c: STRING coverage.
     n_with_string = df["has_string"].sum()
     n_no_string   = len(df) - n_with_string
@@ -485,11 +515,11 @@ def build():
         "label", "max_phase",
         "pLI", "loeuf", "oe_lof", "oe_mis",
         "n_rare", "n_lof",
-        "protein_length",
+        "protein_length", "disorder_fraction",
         "ppi_degree", "ppi_betweenness",
         "tau", "essentiality_score",
         "pub_count", "year_first_described",
-        "has_gnomad", "has_burden", "has_alphafold", "has_string",
+        "has_gnomad", "has_burden", "has_alphafold", "has_disorder", "has_string",
         "has_tau", "has_essentiality", "has_pub_count", "has_year_described",
     ]
     df = df[[c for c in final_cols if c in df.columns]]
