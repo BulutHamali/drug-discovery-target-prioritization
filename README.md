@@ -40,6 +40,31 @@ Athena query layer in between. The Batch compute environment is Spot only
 (`terraform/batch.tf`); there is no separate on-demand environment for
 aggregation steps.
 
+```mermaid
+flowchart TB
+    A[1000 Genomes VCFs<br/>S3 Open Data, us-east-1] --> B
+    subgraph AWS[AWS Batch on Spot]
+        B[PREPARE<br/>subset, normalize, index] --> C[ANNOTATE<br/>bcftools csq]
+        C --> D[BURDEN<br/>per-gene rare + LoF counts]
+        D --> E[COLLECT<br/>merge 22 autosomes]
+    end
+    E --> F[gene_burden_features.parquet<br/>50,657 rows, all 22 autosomes]
+    G[gnomAD, GTEx, DepMap<br/>STRING, UniProt, HGNC, NCBI gene2pubmed] --> H
+    F --> H[Feature matrix<br/>19,296 genes x 23 features]
+    I[Open Targets<br/>clinical-phase label] --> H
+    H --> J[Gene-family GroupKFold<br/>leakage-safe split]
+    J --> K[Gradient boosting<br/>4-variant ablation]
+    K --> L[Ranked target list]
+    H -.-> M[Temporal holdout<br/>separate analysis, Open Targets 21.06 to 26.06]
+```
+
+Only 16,725 of the 50,657 burden rows end up matching the 19,296-gene
+universe (86.68%, see Results below); the rest are non-protein-coding
+symbols or genes with no qualifying rare variant in this call set. The
+temporal holdout branches off separately because it trains on a different,
+older label and a restricted feature set (no `pub_count`, no STRING), not
+because it is a later step in the same pipeline run.
+
 ## Repository layout
 
 ```
@@ -436,4 +461,4 @@ $50 is set on day one. Full breakdown in `DESIGN.md` section 9.
 - [x] ML layer built and validated locally
 - [x] Scaling benchmark run after quota increase (22 autosomes, concurrent Batch execution, under $1, 2h32m)
 - [x] Results writeup (this README's Results section, DESIGN.md sections 6 and 9)
-- [ ] Architecture diagram
+- [x] Architecture diagram
