@@ -68,7 +68,7 @@ All 22 human autosomes of 1000 Genomes phase 3 (tens of GB of input, not a large
 
 ### Cost control (near-zero spend)
 
-- 1000 Genomes (or a public UK Biobank-style subset) as an in-region S3 source: no egress, no storage bill.
+- 1000 Genomes as an in-region S3 source: no egress, no storage bill.
 - Spot instances for embarrassingly parallel steps.
 - S3 lifecycle policies on intermediates.
 - Open Targets and other public layers pulled once and cached.
@@ -121,7 +121,7 @@ The obvious label, predicting the Open Targets association score, is quietly cir
 
 **Chosen label:** does this target have a drug at clinical phase >= 1 (or approved)? Pulled from ChEMBL / Open Targets known-drug evidence. All drug and clinical evidence is excluded from features. This predicts a genuine real-world outcome from biology rather than predicting inputs from inputs. A continuous variant (max clinical phase) supports a regression framing.
 
-**Open-world caveat, stated explicitly rather than left implicit:** absence of a drug does not mean undruggable; it may mean understudied. This is really positive-unlabeled (PU) learning, not clean binary classification. Either handle with a PU approach or define hard negatives carefully and state the open-world assumption explicitly. This is the single hardest design call in the project, and the one most likely to be challenged on review. Do not let it slide.
+**Open-world caveat, stated explicitly rather than left implicit:** absence of a drug does not mean undruggable; it may mean understudied. This is really positive-unlabeled (PU) learning, not clean binary classification. This project treats it that way: the open-world assumption is stated explicitly throughout rather than defining hard negatives, and section 6.2's study-bias check exists specifically to test whether the model is exploiting that openness (learning "famous" instead of "biologically promising"). This is the single hardest design call in the project, and the one most likely to be challenged on review.
 
 ---
 
@@ -131,9 +131,9 @@ Aggregated per gene / protein, grouped by source.
 
 **Genetic constraint and variant burden.** gnomAD constraint (pLI, LOEUF), rare / LoF variant burden, observed-vs-expected ratios, conservation. This is where the Nextflow pipeline output feeds the model, tying the project together. Among the most predictive and most biologically honest features.
 
-**Protein-intrinsic.** Length, domain families, disorder fraction, pocket / structure features derived from AlphaFold. Caution: target-class membership (kinase, GPCR, ion channel) is almost too predictive of tractability and can become a shortcut. Keep it but watch its feature importance.
+**Protein-intrinsic.** Length and disorder fraction derived from AlphaFold and UniProt, both implemented (see below). Domain families and pocket/structure features were considered and not built. Target-class membership (kinase, GPCR, ion channel) was also considered and deliberately excluded: it is almost too predictive of tractability on its own, and risks acting as a shortcut around genuine biological signal rather than a feature that adds to it.
 
-**Implemented status:** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50) are both in the feature set, at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Domain families and pocket/structure features were not implemented. Feature importance is now tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2).
+**Implemented status:** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50) are at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Feature importance is tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2).
 
 **Network.** PPI centrality from STRING (degree, betweenness), pathway membership. Strong signal but heavily confounded by study bias, since well-studied proteins have more measured interactions.
 
@@ -145,19 +145,19 @@ Open Targets association scores are not in this feature set. See section 3 for t
 
 ---
 
-## 6. Leakage-safe evaluation (hand-coded, defendable)
+## 6. Leakage-safe evaluation
 
 Five elements, in priority order.
 
 ### 6.1 Group by gene family, not by gene
 Gene-level splitting is the baseline answer. The good answer groups paralogs and sequence-similar families together (HGNC gene groups or similarity clustering) and uses GroupKFold on that grouping. Otherwise a gene in train and its paralog in test leaks structure and sequence features across the split.
 
-### 6.2 Study-bias stratification (the killer result)
-The naive failure mode of every target-prediction model is learning "is this gene famous." Defend two ways:
+### 6.2 Study-bias stratification
+The naive failure mode of every target-prediction model is learning "is this gene famous." Defended two ways:
 - Check via SHAP whether publication count dominates.
 - Report performance within bins of similar publication count.
 
-If the model still ranks well among understudied genes, it is doing real work. Lead the writeup with this.
+If the model still ranks well among understudied genes, that is evidence it is doing real work rather than riding fame; this is the central result the rest of section 6 and section 12 build on.
 
 **Implemented status:** both checks are implemented. SHAP values are computed via `shap.TreeExplainer` on the same full-data model already fit for `feature_importances_` (`ml/train_eval.py`, printed as "SHAP importances" alongside the existing top-10 `feature_importances_` list in every run), so the two importance rankings can be compared directly; they largely agree, which is itself a useful cross-check. The bin-based check was implemented and substantially extended beyond this original two-line plan: see section 6.6 below for the full method (pooled and paired bootstrap, sign test, repeated CV, median split) and README.md's Results section for what it found.
 
@@ -187,7 +187,7 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 
 **Ranking metrics with per-stratum baselines.** PR-AUC alone is not informative across strata of very different positive rates (7.8% overall, under 1% in the low-publication tercile, close to 20% in the high tercile). Every stratum's lift is PR-AUC divided by that stratum's own positive rate, not the global one, so lift greater than 1.0 means the model beats a random ranker working on that same population. This is what makes the low-tercile and bottom-half results interpretable at all: a PR-AUC of 0.03 sounds weak until you see the stratum's own baseline is 0.009.
 
-**Paired bootstrap comparison between variants on identical folds.** When two feature-set variants (say `biology_only` and `no_pubcount`) are trained and evaluated on the exact same GroupKFold split, their per-fold scores are not independent draws, they are correlated because the hard folds are hard for both variants and the easy folds are easy for both. Reporting two separate marginal confidence intervals and checking whether they overlap throws that correlation away and is therefore a systematically underpowered test: two CIs can overlap heavily while the fold-by-fold difference is consistently one-directional. The correct test resamples the paired per-fold differences directly (`bootstrap_paired_diff_ci`), preserving the pairing. This is why the paired test found statistically meaningful, consistent-direction gaps between variants in cases where the marginal CIs alone looked inconclusive.
+**Paired bootstrap comparison between variants on identical folds.** When two feature-set variants (say `biology_only` and `no_pubcount`) are trained and evaluated on the exact same GroupKFold split, their per-fold scores are not independent draws, they are correlated because the hard folds are hard for both variants and the easy folds are easy for both. Reporting two separate marginal confidence intervals and checking whether they overlap throws that correlation away and is therefore a systematically underpowered test: two CIs can overlap heavily while the fold-by-fold difference is consistently one-directional. The correct test resamples the paired per-fold differences directly (`bootstrap_paired_diff_ci`), preserving the pairing. This is the right test regardless of what it finds: shared folds make the variants' scores correlated, not independent, so a paired comparison can detect a consistent-direction difference that marginal, unpaired CIs would miss, or, as it did after `disorder_fraction` was added, correctly show that a difference is no longer distinguishable from noise. See section 12.2 for what this test actually found, at two different points in the project as the feature set changed.
 
 **Sign test.** A distribution-free complement to the paired bootstrap CI, since 5 folds is too few points for the bootstrap's normal-approximation intuitions to be very trustworthy on their own. Counts how many of the 5 folds favor variant A versus variant B; a lopsided count (e.g. 1-4) corroborates the bootstrap CI's direction without relying on any distributional assumption.
 
@@ -254,10 +254,6 @@ The feature matrix is small enough to train locally or on a tiny EC2 instance. T
 - **AWS Budgets alert at $50.** Email warning before anything surprising happens. This alone makes the worst cases nearly impossible.
 - **Tags on every resource.** Makes spend attributable at a glance. Terraform makes this trivial via default tags.
 - **`terraform destroy` between sessions.** With the NAT Gateway designed out, the remaining idle costs are small, but destroy is still the clean discipline: one command tears the whole stack down, `terraform apply` rebuilds it next session. Converts "remember to manually delete every resource" into a single reliable habit and guarantees nothing is left billing.
-
-### Framing for the writeup
-
-State only what was measured: the full 22-autosome run cost under $1, with the concurrency speedup and per-chromosome cost basis documented above. There is no larger-scale cost model behind this figure; it is not an extrapolation to a bigger dataset, it is the actual measured cost of the actual data processed.
 
 ---
 
