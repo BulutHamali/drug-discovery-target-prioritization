@@ -248,6 +248,40 @@ that it still shows this much enrichment, with the two features most
 plausibly tracking fame removed, is the point. Full method and caveats in
 `ml/temporal_holdout.py` and DESIGN.md section 6.4.
 
+**A random ranker is a low bar. Does the trained model beat sorting genes
+by one well-known biology feature alone?** Same pool, same 338 prospective
+positives, same thresholds, same resampled baseline CI:
+
+| ranking | top 1% | top 5% | top 10% | top 20% | PR-AUC | lift |
+|---|---|---|---|---|---|---|
+| model (trained) | 5.59x | 3.57x | 3.22x | 2.66x | 0.0550 | 2.95x |
+| LOEUF | 2.06x | 2.02x | 1.77x | 1.74x | 0.0294 | 1.57x |
+| pLI | 1.47x | 1.37x | 1.65x | 2.01x | 0.0282 | 1.51x |
+| oe_mis | 3.53x | 2.62x | 2.51x | 1.96x | 0.0361 | 1.93x |
+| essentiality_score | 14.71x | 4.76x | 2.75x | 1.76x | 0.0939 | 5.03x |
+| disorder_fraction | 2.94x | 2.68x | 2.13x | 1.62x | 0.0311 | 1.67x |
+| protein_length | 2.06x | 1.19x | 0.92x | 0.93x | 0.0188 | 1.01x |
+
+**The trained model does not clearly beat the best single-feature
+baseline on this test.** Sorting by `essentiality_score` alone (DepMap,
+more negative Chronos score ranked higher) reaches lift 5.03x, ahead of
+the model's 2.95x, a 41% margin in the baseline's favor. Looking at what
+drives that number: 50 of the 338 prospective positives are ribosomal
+protein genes, which are pan-essential by Chronos across nearly all cell
+lines, so a large share of `essentiality_score`'s top-1% enrichment
+(14.71x) comes from one gene family rather than a broad-based signal.
+This is reported plainly rather than smoothed over: on this specific
+prospective test, with a restricted, time-stable feature set and n=338, a
+single well-chosen feature is competitive with, and here beats, the
+trained model. This comparison was run only for the temporal holdout;
+whether the main ablation's variants (Q1 and Q2 below) beat single-feature
+baselines on their own evaluation was not separately tested, so no claim is
+made about that. What this section does establish is narrower and more
+honest: the temporal holdout's own headline enrichment numbers should not
+be read as proof the trained model outperforms simple biology-based
+sorting, on this particular test, it does not. Full baseline definitions,
+direction choices, and this comparison in `ml/temporal_holdout.py`.
+
 ### Q1: is there real signal on understudied genes, or was the model riding study bias?
 
 **Yes, real signal.** The properly powered test is a median split by
@@ -418,10 +452,17 @@ Across three burden-coverage levels reached over the course of this
 project (2.0% at chr22-only, 29.3% at 5 chromosomes, 86.68% at all 22
 autosomes), `n_rare`'s feature importance in `biology_only` climbed
 monotonically: 0.0112 -> 0.0352 -> 0.0714. The same monotonic climb held
-across all four ablation variants, not just `biology_only`. Burden coverage:
-86.68% of the full protein-coding universe (16,725 / 19,296 genes), 91.0%
-of the autosome-eligible universe (excludes X, Y, and MT, which the 1000
-Genomes autosome run does not cover).
+across all four ablation variants, not just `biology_only`. Burden
+coverage: 86.68% of the full protein-coding universe (16,725 / 19,296
+genes). The remaining 2,571 genes split into two different kinds of gap,
+not one: 896 are on X or Y, out of scope for this autosome-only pipeline
+by design, not a data quality issue. The other 1,675 (1,659 autosomal
+genes, 13 mitochondrial, 3 unmapped in HGNC) are genuinely missing data:
+a mix of genes with no qualifying rare variant in this call set and
+symbol-matching gaps between the Ensembl GFF3 annotation and HGNC. Put
+differently, even restricted to the autosome-eligible universe alone
+(18,384 genes), coverage is 91.0%, not 100%, so roughly 9% of the gap
+within scope is real missingness, not scope exclusion.
 
 ![n_rare feature importance climbing monotonically with burden coverage across three stages of this project: 0.0112 at 2.0%, 0.0352 at 29.3%, 0.0714 at 86.68%](docs/figures/n_rare_trend.png)
 
@@ -467,6 +508,21 @@ DESIGN.md section 9.
   (338 prospective positives) has real power; the 24.09-to-26.06 check (30)
   and the genetic-evidence check's top-50 slice do not, and are reported as
   such rather than dressed up.
+- **Pathway-level leakage.** Gene-family GroupKFold prevents paralog
+  leakage, but genes in the same protein complex can still land in
+  different folds. Our top-ranked understudied genes are spliceosome
+  components, which are a complex, so this is a live concern rather than a
+  theoretical one.
+- **DepMap cancer bias.** DepMap essentiality comes from cancer cell-line
+  panels, so it measures essentiality in a specific and unrepresentative
+  context. This is separate from the time-stability concern already noted
+  above.
+- **SHAP with correlated features.** The four gnomAD constraint metrics
+  (`pLI`, `loeuf`, `oe_lof`, `oe_mis`) are highly correlated with one
+  another, so SHAP can split importance among them or concentrate it
+  arbitrarily on one. The `tau` vs. `disorder_fraction` ranking in
+  particular should be read as "both are strong" rather than as a firm
+  ordering.
 
 ### Closed out: SHAP, bootstrap stability selection, disorder_fraction
 

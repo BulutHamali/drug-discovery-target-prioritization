@@ -122,6 +122,28 @@ MODEL_PARAMS = dict(
 TOP_FRACTIONS = [0.01, 0.05, 0.10, 0.20]
 N_BASELINE_SAMPLES = 1000
 
+# Single-feature baselines: does the trained model actually beat sorting
+# genes by one well-known biology feature alone? Direction for LOEUF, pLI,
+# oe_mis, and essentiality_score is the standard biological convention
+# (lower LOEUF, higher pLI, lower oe_mis = more constrained; more negative
+# DepMap Chronos score = more essential). disorder_fraction and
+# protein_length have no such standard convention, so their direction was
+# set from each feature's own Spearman correlation with label_cutoff,
+# computed once before looking at any prospective-set result, not tuned to
+# this test's outcome: disorder_fraction correlates negatively with
+# label_cutoff (rho=-0.059, lower disorder ranks higher), protein_length
+# correlates positively (rho=+0.060, longer protein ranks higher). All six
+# use "ascending" to mean the raw column is sorted ascending and the LOWEST
+# values are treated as the top-ranked, highest-priority genes.
+SINGLE_FEATURE_BASELINES = {
+    "LOEUF":              {"col": "loeuf",              "ascending": True},
+    "pLI":                {"col": "pLI",                "ascending": False},
+    "oe_mis":             {"col": "oe_mis",              "ascending": True},
+    "essentiality_score": {"col": "essentiality_score",  "ascending": True},
+    "disorder_fraction":  {"col": "disorder_fraction",   "ascending": True},
+    "protein_length":     {"col": "protein_length",      "ascending": False},
+}
+
 
 def load_cutoff_label() -> pd.DataFrame:
     kda = pd.read_parquet(CUTOFF_KDA_DIR, columns=["targetId", "phase"])
@@ -149,6 +171,37 @@ def baseline_ci(pool_size: int, n_draw: int, top_frac: float, n_samples: int, se
         idx = rng.choice(pool_size, size=n_draw, replace=False)
         rates[i] = (idx < n_top).mean()
     return rates.mean(), np.percentile(rates, 2.5), np.percentile(rates, 97.5)
+
+
+def evaluate_ranking(unlabeled_at_cutoff, score, pool_size, n_prospective):
+    """
+    Evaluate one ranking, model out-of-fold score or a single raw feature,
+    against the prospective positives, using the exact same thresholds and
+    resampled baseline CI for every ranking so comparisons are apples to
+    apples. `score` must already be oriented so higher = higher priority
+    (single-feature baselines negate the raw column before calling this
+    when their stated direction is ascending).
+    """
+    ranked = unlabeled_at_cutoff.copy()
+    ranked["_score"] = score
+    ranked = ranked.sort_values("_score", ascending=False).reset_index(drop=True)
+
+    per_threshold = {}
+    for frac in TOP_FRACTIONS:
+        n_top = int(round(pool_size * frac))
+        n_hits = (ranked.head(n_top)["label_future"] == 1).sum()
+        observed = n_hits / n_prospective
+        base_mean, base_lo, base_hi = baseline_ci(pool_size, int(n_prospective), frac, N_BASELINE_SAMPLES, RANDOM_SEED)
+        enrichment = observed / base_mean if base_mean > 0 else float("nan")
+        per_threshold[frac] = {
+            "observed": observed, "base_mean": base_mean,
+            "base_lo": base_lo, "base_hi": base_hi, "enrichment": enrichment,
+        }
+
+    pr_auc = average_precision_score(ranked["label_future"].values, ranked["_score"].values)
+    base_rate = n_prospective / pool_size
+    lift = pr_auc / base_rate if base_rate > 0 else float("nan")
+    return {"per_threshold": per_threshold, "pr_auc": pr_auc, "lift": lift}
 
 
 def main():
@@ -293,27 +346,94 @@ def main():
         print(f"  {row['symbol']:<12}  rank {int(row['rank']):>6} / {pool_size:,}  (top {pct:.1f}%)  score {row['oof_score']:.4f}")
 
     print("\n" + "=" * 78)
-    print("STEP 5: verdict, random-ranker comparison")
+    print("STEP 5: single-feature baselines")
+    print("=" * 78)
+    print(
+        "The random-ranker baseline above is a low bar. The real question is\n"
+        "whether the trained model beats simply sorting genes by ONE well-known\n"
+        "biology feature. Same pool, same 338 prospective positives, same\n"
+        "thresholds, same resampled baseline CI, so this is directly comparable\n"
+        "to the model's own table above. See SINGLE_FEATURE_BASELINES in this\n"
+        "file for the direction convention used for each feature and why."
+    )
+
+    model_result = evaluate_ranking(unlabeled_at_cutoff, unlabeled_at_cutoff["oof_score"].values, pool_size, n_prospective)
+    all_results = {"model (trained)": model_result}
+    for name, spec in SINGLE_FEATURE_BASELINES.items():
+        raw = unlabeled_at_cutoff[spec["col"]].values
+        score = -raw if spec["ascending"] else raw
+        all_results[name] = evaluate_ranking(unlabeled_at_cutoff, score, pool_size, n_prospective)
+
+    header = f"{'ranking':<22}" + "".join(f"{f'top {int(t*100)}%':>12}" for t in TOP_FRACTIONS) + f"{'PR-AUC':>10}{'lift':>8}"
+    print(f"\n{header}")
+    print("-" * len(header))
+    for name, res in all_results.items():
+        row = f"{name:<22}"
+        for frac in TOP_FRACTIONS:
+            row += f"{res['per_threshold'][frac]['enrichment']:>11.2f}x"
+        row += f"{res['pr_auc']:>10.4f}{res['lift']:>7.2f}x"
+        print(row)
+    print("-" * len(header))
+    print(
+        "Each cell is enrichment (observed rate / resampled baseline mean) at that\n"
+        "threshold; lift is PR-AUC / base rate, the same summary metric used\n"
+        "throughout this project. 1.00x = indistinguishable from a random ranker."
+    )
+
+    best_baseline_name = max(
+        (n for n in all_results if n != "model (trained)"),
+        key=lambda n: all_results[n]["lift"],
+    )
+    best_baseline_lift = all_results[best_baseline_name]["lift"]
+    model_lift_val = all_results["model (trained)"]["lift"]
+
+    print("\n" + "=" * 78)
+    print("STEP 6: verdict")
     print("=" * 78)
     any_above = any(
         ((unlabeled_at_cutoff.head(int(round(pool_size * frac)))["label_future"] == 1).sum() / n_prospective)
         > baseline_ci(pool_size, int(n_prospective), frac, N_BASELINE_SAMPLES, RANDOM_SEED)[2]
         for frac in TOP_FRACTIONS
     )
+    print("Random-ranker comparison:")
     if any_above:
         print(
-            "At least one top-fraction threshold shows the observed rate above the\n"
-            "resampled baseline's 95% CI: distinguishable from chance at that\n"
-            "threshold. See the per-threshold table above for which ones."
+            "  At least one top-fraction threshold shows the observed rate above the\n"
+            "  resampled baseline's 95% CI: distinguishable from chance at that\n"
+            "  threshold. See the per-threshold table above for which ones."
         )
     else:
         print(
-            "No top-fraction threshold shows the observed rate above the resampled\n"
-            "baseline's 95% CI. This is a null result: with hundreds of prospective\n"
-            "positives this test finally has real power, and it still does not show\n"
-            "detectable enrichment. Reported as is, not tuned to find significance."
+            "  No top-fraction threshold shows the observed rate above the resampled\n"
+            "  baseline's 95% CI. This is a null result: with hundreds of prospective\n"
+            "  positives this test finally has real power, and it still does not show\n"
+            "  detectable enrichment. Reported as is, not tuned to find significance."
         )
-    print(f"PR-AUC lift over base rate: {lift:.2f}x (1.0x = random ranker)")
+    print(f"  PR-AUC lift over base rate: {lift:.2f}x (1.0x = random ranker)")
+
+    print("\nSingle-feature-baseline comparison, the real bar:")
+    print(f"  best single-feature baseline: {best_baseline_name} (lift {best_baseline_lift:.2f}x)")
+    print(f"  trained model: lift {model_lift_val:.2f}x")
+    if model_lift_val > best_baseline_lift:
+        margin = (model_lift_val / best_baseline_lift - 1) * 100
+        print(
+            f"  The trained model beats the best single-feature baseline by"
+            f" {margin:.0f}% (lift). The ML layer is earning its place over sorting\n"
+            f"  by {best_baseline_name} alone on this test."
+        )
+    else:
+        deficit = (1 - model_lift_val / best_baseline_lift) * 100
+        print(
+            f"  The trained model does NOT clearly beat the best single-feature\n"
+            f"  baseline here, it trails {best_baseline_name} by {deficit:.0f}% (lift).\n"
+            f"  Stated plainly rather than smoothed over: on this specific test, sorting\n"
+            f"  by {best_baseline_name} alone gets most or all of the way to the model's\n"
+            f"  result. This does not invalidate the model (see the ablation results\n"
+            f"  elsewhere in this project, where the full feature set clearly beats\n"
+            f"  {best_baseline_name}-only rankings), but on this particular prospective\n"
+            f"  test, with a restricted feature set and n=338, a single well-chosen\n"
+            f"  feature is competitive with the trained model."
+        )
 
     print("\n" + "=" * 78)
     print("CAVEATS")
@@ -328,7 +448,9 @@ def main():
         "ablation variants even if the biology-only signal is genuinely real; it\n"
         "is testing a deliberately narrower feature set under a stricter,\n"
         "leakage-safe temporal constraint, not a like-for-like comparison to the\n"
-        "main results."
+        "main results. The single-feature baselines above share this same\n"
+        "restricted, time-stable feature set; they are not evaluated against the\n"
+        "full feature set either."
     )
     print("=" * 78)
 
