@@ -28,12 +28,11 @@ flowchart TB
 ## What it found
 
 - **Temporal holdout (the strongest test here):** trained on Open Targets release 21.06, evaluated on the 338 genes that gained a clinical-phase drug by release 26.06, genuinely prospective. 5.59x enrichment in the top 1%, above the resampled baseline CI at every threshold.
+- **Real signal on understudied genes:** a median split by publication count puts all four feature-set variants' bottom-half lift 95% CI entirely above 1.0, including a variant with every publication-history and network-centrality feature removed.
+- **Burden coverage 86.68%** of the protein-coding universe (16,725 / 19,296 genes) from a full 22-autosome AWS Batch run, for **under $1** total spend, monotonic `n_rare` importance trend across three coverage stages.
 
 > [!IMPORTANT]
-> The trained model does not clearly beat sorting genes by DepMap essentiality alone on this same test (lift 5.03x for the single-feature baseline vs. 2.95x for the model). Stated plainly rather than smoothed over, see [Results in detail](#results-in-detail) below.
-
-- **Real signal on understudied genes:** a median split by publication count puts all four feature-set variants' bottom-half lift 95% CI entirely above 1.0, including a variant with every publication-history and network-centrality feature removed.
-- **Burden coverage 86.68%** of the protein-coding universe (16,725 / 19,296 genes) from a full 22-autosome AWS Batch run, for **under $1** total spend.
+> The trained model does not clearly beat sorting genes by DepMap essentiality alone on the temporal holdout test above (lift 5.03x for the single-feature baseline vs. 2.95x for the model). Stated plainly rather than smoothed over, see [Results in detail](#results-in-detail) below.
 
 ## How it works
 
