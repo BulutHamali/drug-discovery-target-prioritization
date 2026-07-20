@@ -118,7 +118,7 @@ The obvious label, predicting the Open Targets association score, is quietly cir
 
 Aggregated per gene / protein, grouped by source.
 
-**Genetic constraint and variant burden.** gnomAD constraint (pLI, LOEUF), rare / LoF variant burden, observed-vs-expected ratios, conservation. This is where the Nextflow pipeline output feeds the model, tying the project together. Among the most predictive and most biologically honest features.
+**Genetic constraint and variant burden.** gnomAD constraint (pLI, LOEUF), rare / LoF variant burden, observed-vs-expected ratios. This is where the Nextflow pipeline output feeds the model, tying the project together. Among the most predictive and most biologically honest features.
 
 **Protein-intrinsic.** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50), at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Feature importance is tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2). Section 13.2 covers two other protein-intrinsic feature ideas that were considered and not built.
 
@@ -134,7 +134,7 @@ Open Targets association scores are not in this feature set. See section 3 for t
 
 ## 6. Leakage-safe evaluation
 
-Five elements, in priority order.
+Six elements, in priority order.
 
 ### 6.1 Group by gene family, not by gene
 Gene-level splitting is the baseline answer. The good answer groups paralogs and sequence-similar families together (HGNC gene groups or similarity clustering) and uses GroupKFold on that grouping. Otherwise a gene in train and its paralog in test leaks structure and sequence features across the split.
@@ -157,7 +157,7 @@ Prioritization is a top-of-list problem, like virtual screening; nobody pursues 
 Enrichment factor speaks pharma's native language and signals understanding of the actual decision.
 
 ### 6.4 Temporal holdout
-Train on targets that reached the clinic before a cutoff year, then predict which genes reached clinical stage after it, using only pre-cutoff values for time-dependent features (publication counts especially). Even a partial temporal split is the most honest "could this have prospectively found a real target" test, and almost no portfolio project does it.
+Train on targets that reached the clinic before a cutoff year, then predict which genes reached clinical stage after it, using only pre-cutoff values for time-dependent features (publication counts especially). Even a partial temporal split is the most honest "could this have prospectively found a real target" test.
 
 **Implemented** (`ml/temporal_holdout.py`), using Open Targets release history as the time machine instead of per-gene clinical trial dates: a gene's clinical-phase label in an old Open Targets release is "the past," the same gene's label in a current release is "the future." Cutoff release 21.06 (June 2021), evaluated against 26.06 (June 2026), a clean 5.0-year gap. pub_count and STRING centrality (ppi_degree, ppi_betweenness) were dropped rather than back-dated (see the module docstring for why back-dating pub_count correctly was not feasible in this pass), so this is a stricter, narrower feature set than the main ablation variants, not a like-for-like comparison to them. Trained on the 1,196 genes labeled at 21.06, evaluated against the 338 genes that were unlabeled at 21.06 and gained a clinical-phase drug by 26.06. Result: enrichment above the resampled baseline 95% CI at every threshold tested (5.59x at top 1%, 3.57x at top 5%, 3.22x at top 10%, 2.66x at top 20%), PR-AUC 0.055 against a base rate of 0.0187 (lift 2.95x). This is the strongest single result in the project: real prospective signal, with fame-riding excluded by construction rather than by argument. Full numbers in the README results section.
 
@@ -211,11 +211,11 @@ Section 13.3 covers how item 2 changed shape partway through.
 
 ## 9. Cost
 
-Target: $30 to $80 for the whole project if disciplined. It can exceed $200 if a few specific things are left running. The difference is discipline, not scale. All figures below this line are orders-of-magnitude estimates, kept for the original planning rationale.
-
 **Measured, full 22-autosome run:** total spend under $1. 2h32m wall clock for all 17 remaining autosomes running concurrently on Batch, versus an estimated ~23h if run one chromosome at a time, roughly a 9x speedup from raising `max_vcpus` from 4 to 8 (terraform/variables.tf). chr8 was the only chromosome whose ANNOTATE step needed more than the flat 4GB (it needed exactly 8GB; see pipeline/nextflow.config's dynamic memory escalation and the chr8 OOM incident); bcftools csq's memory footprint tracks transcript density in the region being annotated, not raw sequence length, which is why chr8 (physically smaller than chr3/4/5, which all succeeded at 4GB) was the outlier.
 
 The reason it is this cheap is the in-region data choice already made: 1000 Genomes lives in the AWS Open Data registry in us-east-1. Run compute in the same region and the source data costs nothing to store and nothing to move, removing what is normally the largest genomics bill.
+
+**Original planning estimate, for comparison:** $30 to $80 for the whole project if disciplined, exceeding $200 if a few specific things were left running. The difference was expected to be discipline, not scale. The breakdown below is that original estimate, kept for the planning rationale; it is not a measurement.
 
 ### Breakdown (live subset run plus iteration)
 
@@ -261,8 +261,6 @@ estimate for comparison.
 - **Gene-family grouping source.** HGNC gene groups (`ml/gene_families.py`), not sequence-similarity clustering.
 - **Subset size for the live run.** All 22 autosomes, not a smaller subset; there is no separate scaling-math extrapolation beyond what was measured (section 9).
 - **Open Targets schema version.** 24.09 pinned for the main label and ablation; 21.06 and 26.06 for the temporal holdout's cutoff and future releases respectively (section 6.4).
-
-These were open questions during planning; section 13.5 has a pointer.
 
 ---
 
@@ -501,11 +499,3 @@ benchmark were built and revised iteratively rather than in sequence, and
 the Glue/Athena evidence layer planned for week 2 was dropped entirely
 (section 13.1).
 
-### 13.5 Open design calls (section 11)
-
-Five questions were open at the start of the project: negative-set / PU
-strategy, the exact clinical-phase cutoff, gene-family grouping source,
-subset size for the live run, and Open Targets schema version. Section 11
-states how each was resolved; nothing here changes those answers, this
-entry exists only to record that they started as open questions rather
-than settled choices.
