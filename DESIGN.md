@@ -36,9 +36,8 @@ Public data (S3, in-region)
    Ranked target list + SHAP interpretability
 ```
 
-**As actually built**, this simplified in three ways, tracked here rather
-than left for the reader to discover by diffing the diagram against the
-code:
+**As actually built**, this simplified in three ways (section 13.1 has what
+changed and why):
 
 ```
 Public data (S3, in-region)
@@ -51,16 +50,6 @@ Public data (S3, in-region)
         |
    Ranked target list (feature_importances_ and SHAP, section 6.2)
 ```
-
-- **Glue + Athena was never built.** The Nextflow pipeline's Parquet output
-  is read directly by `ml/build_features.py` with pandas; there is no Glue
-  crawler or Athena query layer.
-- **No separate on-demand compute environment exists.** `terraform/batch.tf`
-  defines one Batch compute environment, type `SPOT`. Every pipeline run,
-  annotation and aggregation alike, ran on Spot.
-- **SHAP and bootstrap stability selection are implemented** (`ml/train_eval.py`'s
-  `shap.TreeExplainer` call and `bootstrap_stability_selection`, both added
-  after the rest of this document was written). See sections 6.2 and 6.5.
 
 ### What was actually demonstrated
 
@@ -131,9 +120,7 @@ Aggregated per gene / protein, grouped by source.
 
 **Genetic constraint and variant burden.** gnomAD constraint (pLI, LOEUF), rare / LoF variant burden, observed-vs-expected ratios, conservation. This is where the Nextflow pipeline output feeds the model, tying the project together. Among the most predictive and most biologically honest features.
 
-**Protein-intrinsic.** Length and disorder fraction derived from AlphaFold and UniProt, both implemented (see below). Domain families and pocket/structure features were considered and not built. Target-class membership (kinase, GPCR, ion channel) was also considered and deliberately excluded: it is almost too predictive of tractability on its own, and risks acting as a shortcut around genuine biological signal rather than a feature that adds to it.
-
-**Implemented status:** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50) are at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Feature importance is tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2).
+**Protein-intrinsic.** `protein_length` (UniProt Swiss-Prot) and `disorder_fraction` (AlphaFold DB prediction API, fraction of residues with pLDDT < 50), at 98.9% and 98.2% coverage of the gene universe respectively. `disorder_fraction` turned out to be a top-tier contributor, not a minor one, co-dominant with `tau` in the `biology_only` variant by SHAP (section 12.1). Feature importance is tracked two ways, `feature_importances_` and SHAP, both implemented (section 6.2). Section 13.2 covers two other protein-intrinsic feature ideas that were considered and not built.
 
 **Network.** PPI centrality from STRING (degree, betweenness), pathway membership. Strong signal but heavily confounded by study bias, since well-studied proteins have more measured interactions.
 
@@ -199,7 +186,7 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 
 ## 7. Division of labor
 
-**Orchestration:** Nextflow process definitions, Batch queue config, Spot routing (as built, section 2, there is no separate on-demand routing or Glue/Athena layer).
+**Orchestration:** Nextflow process definitions, Batch queue config, Spot routing (as built, section 13.1, there is no separate on-demand routing or Glue/Athena layer).
 
 **Hand-coded, not delegated to a library:**
 - Leakage-safe splitting (gene-family GroupKFold). Implemented.
@@ -213,12 +200,12 @@ This is what `ml/train_eval.py` actually does, distilled from working through th
 
 ## 8. Deliverables
 
-The original plan, with delivery status noted:
+1. The repository.
+2. This design doc, as design rationale, with the extended results discussion in section 12.
+3. An architecture diagram and the scaling / cost math: the Mermaid diagram in README.md, cost and scaling numbers in section 9 below.
+4. A results writeup: which genes ranked well, performance against the clinical-phase label, the study-bias result. In README.md's Results section, with the extended discussion here in section 12.
 
-1. The repository. Delivered.
-2. This design doc, as design rationale. Delivered; restructured partway through (section 12) once the results writeup moved to README.md for readability.
-3. An architecture diagram and the scaling / cost math. Delivered: the Mermaid diagram in README.md, cost and scaling numbers in section 9 below.
-4. A results writeup: which genes ranked well, performance against the clinical-phase label, the study-bias result. Delivered in README.md's Results section, with the extended discussion here in section 12.
+Section 13.3 covers how item 2 changed shape partway through.
 
 ---
 
@@ -236,7 +223,7 @@ The reason it is this cheap is the in-region data choice already made: 1000 Geno
 |------|----------|-------|
 | Batch compute (Spot) | $20 to $60 | Annotation is cheap per sample; includes re-runs and debugging |
 | S3 intermediates | $5 to $20 | A few hundred GB for a few weeks, less with lifecycle rules |
-| Glue + Athena | $5 to $15 | Planning estimate only; this layer was never built (section 2), so this line was never actually incurred |
+| Glue + Athena | $5 to $15 | Planning estimate only; this layer was never built (section 13.1), so this line was never actually incurred |
 | ML training | $0 to $30 | ~20,000 genes x ~100 features fits in laptop memory; train locally for $0 |
 | Egress | $0 | Only if everything stays in-region |
 
@@ -257,33 +244,25 @@ The feature matrix is small enough to train locally or on a tiny EC2 instance. T
 
 ---
 
-## 10. Timeline (3 to 4 weeks, part-time, original estimate)
+## 10. Timeline
 
-| Week | Focus (as planned) |
-|------|-------|
-| 1 | Infra + data ingestion + one Nextflow process running on Batch |
-| 2 | Full annotation pipeline (Glue/Athena evidence layer was planned here; never built, section 2) |
-| 3 | Hand-coded ML layer (features, leakage-safe eval, stability selection, SHAP) |
-| 4 | Scaling benchmark, cost writeup, docs, polish |
-
-This was the original estimate, not a tracked actual. The repository's commit
-history spans roughly three weeks (first commit to the temporal holdout and
-final writeup), close to the estimate, though the actual work did not follow
-these four weekly buckets in order; the ML layer, evaluation methodology, and
-scaling benchmark were built and revised iteratively rather than in four
-discrete weekly phases.
+The repository's commit history spans roughly three weeks, from the first
+commit to the temporal holdout and final writeup. The ML layer, evaluation
+methodology, and scaling benchmark were built and revised iteratively rather
+than in discrete weekly phases. Section 13.4 has the original week-by-week
+estimate for comparison.
 
 ---
 
-## 11. Open design calls, as resolved
+## 11. Design decisions
 
-The original open list from planning, with how each was actually resolved:
+- **Negative-set definition / PU strategy** (section 4). Open-world assumption stated explicitly, no synthetic hard-negative construction; absence of a drug is treated as unlabeled, not negative, throughout.
+- **Exact clinical-phase cutoff for the label and for the temporal holdout.** Clinical phase >= 1 (or approved) for both the main label and the temporal holdout's cutoff-release and future-release labels.
+- **Gene-family grouping source.** HGNC gene groups (`ml/gene_families.py`), not sequence-similarity clustering.
+- **Subset size for the live run.** All 22 autosomes, not a smaller subset; there is no separate scaling-math extrapolation beyond what was measured (section 9).
+- **Open Targets schema version.** 24.09 pinned for the main label and ablation; 21.06 and 26.06 for the temporal holdout's cutoff and future releases respectively (section 6.4).
 
-- **Negative-set definition / PU strategy** (section 4). Resolved: open-world assumption stated explicitly, no synthetic hard-negative construction; absence of a drug is treated as unlabeled, not negative, throughout.
-- **Exact clinical-phase cutoff for the label and for the temporal holdout.** Resolved: clinical phase >= 1 (or approved) for both the main label and the temporal holdout's cutoff-release and future-release labels.
-- **Gene-family grouping source.** Resolved: HGNC gene groups (`ml/gene_families.py`), not sequence-similarity clustering.
-- **Subset size for the live run.** Resolved: all 22 autosomes, not a smaller subset; there is no separate scaling-math extrapolation beyond what was measured (section 9).
-- **Open Targets schema version.** Resolved: 24.09 pinned for the main label and ablation; 21.06 and 26.06 for the temporal holdout's cutoff and future releases respectively (section 6.4).
+These were open questions during planning; section 13.5 has a pointer.
 
 ---
 
@@ -446,3 +425,87 @@ gained a clinical-phase drug in release 26.06. Interesting, but n=1.
 - `ml/cache/training_table.parquet`, full feature matrix, 19,296 genes. Burden features (n_rare, n_lof) cover 16,725 genes (86.68% of the protein-coding universe, 91.0% of the autosome-eligible universe), the rest zero-filled per the documented missing-data convention.
 - `ml/cache/cv_folds.parquet`, fold assignments (GroupKFold, n=5)
 - `ml/cache/oos_predictions.parquet`, out-of-sample scores, labels, and ranks for whichever `--feature-set` was last run
+
+---
+
+## 13. What changed from the original design and why
+
+This project was scoped as a plan before it was built as a system, and the
+two do not fully match. Rather than note each divergence inline where it
+occurs, every place the as-built system diverged from the original plan is
+collected here, with the reasoning, in one place.
+
+### 13.1 Architecture (section 2)
+
+Originally planned: the canonical AWS genomics reference architecture, with
+a Glue + Athena tabular evidence layer between the pipeline output and ML
+training, and a separate on-demand Batch compute environment for
+aggregation / join steps.
+
+As built, this simplified in three ways:
+
+- **Glue and Athena were dropped.** The full feature table is about 19,296
+  rows; pandas reads that instantly in memory. A SQL-over-S3 query layer
+  would add cost and a service dependency for no benefit at this scale.
+  `ml/build_features.py` reads the Nextflow pipeline's Parquet output
+  directly.
+- **No separate on-demand compute environment was created.**
+  `terraform/batch.tf` defines a single Batch compute environment, type
+  `SPOT`, and every step, annotation and aggregation alike, ran on it.
+  Aggregation here is a single Parquet merge over the pipeline's own
+  output, not a job that needs guaranteed, non-preemptible capacity, so
+  paying on-demand's premium by default was not worth it.
+- **SHAP and bootstrap stability selection were added later.** Both were
+  built after the rest of this document was first written (`ml/train_eval.py`'s
+  `shap.TreeExplainer` call and `bootstrap_stability_selection`); not part
+  of the original plan, but implemented well before the project's results
+  were finalized. See sections 6.2 and 6.5.
+
+### 13.2 Feature set (section 5)
+
+Originally planned: domain families, pocket / structure features, and
+target-class membership (kinase, GPCR, ion channel), alongside protein
+length and disorder fraction.
+
+As built: domain families and pocket / structure features were never
+built, out of scope for the v1 feature set described in section 5. Target
+class membership was deliberately excluded rather than deferred: it is
+almost too predictive of tractability on its own, and risks acting as a
+shortcut around genuine biological signal rather than a feature that adds
+to it.
+
+### 13.3 Deliverables (section 8)
+
+All four items listed in section 8 were delivered. The one shape change:
+this design doc was restructured partway through. The detailed results
+discussion moved to section 12, and the headline results writeup moved to
+README.md, once it became clear a single document could not serve both as
+design rationale and as a readable results summary.
+
+### 13.4 Timeline (section 10)
+
+Originally estimated: 3 to 4 weeks part-time, across four discrete weekly
+phases.
+
+| Week | Focus (as planned) |
+|------|-------|
+| 1 | Infra + data ingestion + one Nextflow process running on Batch |
+| 2 | Full annotation pipeline, including a Glue/Athena evidence layer |
+| 3 | Hand-coded ML layer (features, leakage-safe eval, stability selection, SHAP) |
+| 4 | Scaling benchmark, cost writeup, docs, polish |
+
+As built: the actual duration (roughly three weeks, section 10) came in
+close to the estimate, but the work did not follow these four weekly
+buckets in order. The ML layer, evaluation methodology, and scaling
+benchmark were built and revised iteratively rather than in sequence, and
+the Glue/Athena evidence layer planned for week 2 was dropped entirely
+(section 13.1).
+
+### 13.5 Open design calls (section 11)
+
+Five questions were open at the start of the project: negative-set / PU
+strategy, the exact clinical-phase cutoff, gene-family grouping source,
+subset size for the live run, and Open Targets schema version. Section 11
+states how each was resolved; nothing here changes those answers, this
+entry exists only to record that they started as open questions rather
+than settled choices.
