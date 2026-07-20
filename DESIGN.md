@@ -281,3 +281,165 @@ State it as "ran the live benchmark for under $X, with full-100TB cost modeled a
 - Gene-family grouping source (HGNC groups vs sequence-similarity clustering).
 - Subset size for the live run vs the scaling-math extrapolation.
 - Current Open Targets schema version and field mappings.
+
+---
+
+## 12. Results detail
+
+README.md was restructured for readability (headline numbers, one picture,
+a short "how it works," everything else collapsed or linked). This section
+holds the depth that moved out of it: full methodology discussion, the
+descriptive correlation table, and the secondary validation detail. No
+numbers here differ from README.md, this is the same results, just the
+longer version.
+
+### 12.1 SHAP and bootstrap stability selection, in detail
+
+**SHAP** (`shap.TreeExplainer` on the same full-data model used for
+`feature_importances_`): the two importance mechanisms broadly agree, and
+where they disagree, the disagreement is informative. In `biology_only`,
+`feature_importances_` ranks `tau` first (0.213) and `disorder_fraction`
+fourth (0.120); SHAP ranks them essentially tied for first (`tau` 0.373,
+`disorder_fraction` 0.371), both well clear of everything else. Both
+methods agree `disorder_fraction` is a top-tier contributor, not a minor
+one, contrary to what was expected going in (a real but likely secondary
+contributor was the working assumption before this run).
+
+**Bootstrap stability selection** (50 row-level resamples of the full
+training set, refit each time, tracks how often each feature lands in the
+top 10 by `feature_importances_`, features selected in more than 70% of
+resamples flagged as stable): the core biology features, gnomAD
+constraint (`pLI`, `loeuf`, `oe_mis`, `oe_lof`), burden (`n_rare`),
+expression (`tau`, `essentiality_score`), and structure (`protein_length`,
+`disorder_fraction`), are selected in 96 to 100% of resamples across all
+four variants. `pub_count` and `year_first_described`, where present, are
+also stable at 100%, consistent with real (if confounded) predictive
+signal rather than noise. `n_lof` and `ppi_betweenness` are the least
+stable features, near the bottom of most variants' top 10 or absent from
+it in some resamples.
+
+**Fetching `disorder_fraction` required a real fix, not just a flag flip.**
+`ml/fetch_alphafold.py`'s `--disorder` flag pointed at a dead AlphaFold DB
+URL (every versioned bulk file 404s now); the correct source is AlphaFold
+DB's prediction API, which conveniently returns the needed fraction
+directly (`fractionPlddtVeryLow`, an exact match for the project's existing
+pLDDT < 50 disorder threshold) without needing to fetch or parse
+per-residue arrays. Once added, `disorder_fraction` turned out to be a much
+bigger contributor than expected, enough to change the Q2 answer below from
+a clean "yes" to "no longer clearly yes." Both are the kind of thing a real
+implementation pass finds that planning documents don't anticipate.
+
+### 12.2 Q1 and Q2, extended discussion
+
+**Q1.** The model beats a random ranker on understudied genes even with
+every publication-history and network-centrality feature removed
+(`biology_only`). An earlier tercile-based analysis (60 positives in the
+low-publication group) had concluded this was "not distinguishable from
+noise." That conclusion was a power artifact of an underpowered
+stratification, not a genuine null; the median split (159 positives in the
+bottom half) resolves it.
+
+**Q2, before and after `disorder_fraction`.** Paired bootstrap comparison
+of `biology_only` vs. `no_pubcount` on identical folds, computed on the
+low-publication-tercile lift: before `disorder_fraction` was added, mean
+difference -8.33, 95% CI [-16.84, -0.03] (excludes zero), and the
+median-split CIs for `biology_only` vs. `all_features` did not overlap
+([2.12, 3.64] vs. [3.98, 7.25]), the basis for an earlier "yes, measurably"
+answer. After adding `disorder_fraction`: mean difference -8.00, 95% CI
+[-17.19, +0.21] (now includes zero), sign test still 1-4 in the same
+direction (`no_pubcount` wins 4 of 5 folds), and the median-split CIs now
+overlap by a hair (0.01): `biology_only` [2.17, 4.00] vs. `all_features`
+[3.99, 7.76].
+
+Adding one more real, time-stable biology feature closed most of the gap
+that used to be attributed to discovery-history features. The sign test
+direction hasn't changed, so there may still be a real, small effect, but
+it is no longer distinguishable from sampling noise at conventional
+confidence with the current feature set and fold count. This is reported
+as the update it is: the honest answer to Q2 moved from "yes" to "no longer
+clearly yes" when the feature set became more complete, itself evidence for
+the open question below, that missing biology, not just fame, was likely
+responsible for some of what looked like a discovery-history-features
+effect.
+
+### 12.3 Open question: descriptive correlations, in detail
+
+Descriptive Spearman correlation between `year_first_described` and the
+biology features already in `biology_only`:
+
+| feature | rho | p-value |
+|---|---|---|
+| loeuf | 0.203 | 6.45e-179 |
+| oe_lof | 0.166 | 5.76e-119 |
+| tau | 0.159 | 1.91e-109 |
+| oe_mis | 0.152 | 1.47e-100 |
+| pLI | -0.110 | 7.49e-53 |
+| essentiality_score | 0.073 | 2.72e-24 |
+| protein_length | -0.066 | 6.64e-20 |
+
+Max |rho| is 0.203. At n=19,296, p-values this small are not informative on
+their own; with this many genes, even trivial correlations clear any
+conventional significance threshold, so the magnitudes are what matter, and
+they are small to moderate. This table is descriptive only, not a
+decomposition: it shows discovery timing is entangled with biology, it does
+not tell us how much of `year_first_described`'s contribution in Q2 is fame
+vs. biology. Critically, `biology_only` already contains `pLI`, `loeuf`,
+`oe_mis`, `oe_lof`, and `essentiality_score`, so whatever
+`year_first_described` adds on top of `biology_only` is, by construction,
+not the signal those features already capture; these correlations cannot
+explain that gap away. A residualization scheme (regressing
+`year_first_described` on biology features and calling the residual "pure
+fame") was deliberately not implemented: that residual would contain
+technological accessibility, funding history, disease salience, and noise,
+not just fame, and is a causal claim this project cannot support.
+
+`disorder_fraction` was not included in this correlation table (it was
+added to the feature set after this table was first produced), but the Q2
+update above is directly relevant here: closing most of the `biology_only`
+vs. `all_features` gap by adding one more real biology feature is
+consistent with a meaningful share of the original gap being missing
+biology rather than fame, though it does not prove it, `disorder_fraction`
+could itself happen to correlate with discovery timing the same way the
+table above's features do. That correlation was not separately checked.
+
+### 12.4 Secondary validations, in detail
+
+Two smaller checks, both against real external evidence, both underpowered
+enough that a null result at any given threshold does not contradict the
+rest of these results.
+
+**Genetic evidence check** (`ml/validate_genetic_evidence.py`): among
+`biology_only`'s top-ranked unlabeled genes, checked for independent human
+genetic disease evidence (Open Targets Genetics, `associationByDatatypeDirect`
+filtered to `genetic_association`, threshold score >= 0.5). Top 50: 0.540
+observed vs. 0.501 baseline, within the baseline 95% CI [0.360, 0.620], not
+distinguishable from noise at this N. Top 100: 1.26x enrichment, above the
+baseline CI. Top 500: 1.42x enrichment, above the baseline CI. This check is
+confounded by design: genetic disease evidence makes a gene more likely to
+already attract a drug program, so it measures whether the model ranks
+toward genes the field would find interesting, not whether they are
+druggable.
+
+**24.09 to 26.06 newly-labeled check** (`ml/validate_prospective_labels.py`):
+an earlier, smaller version of the temporal holdout, using the same 24.09
+label the main ablation trains against and a shorter gap to 26.06. Only 30
+genes moved from unlabeled to labeled in that window, an underpowered
+sample by construction. Enrichment ratios (0.68x at top 5%, 2.03x at top
+10%, 1.84x at top 20%) were noisy at this N and all fell within their
+resampled baseline's 95% CI, an inconclusive aggregate result. One
+individual gene is worth naming as an anecdote, not evidence: `KCNMA1`
+ranked 51st of 17,789 unlabeled genes in that check (was 18th before
+`disorder_fraction` was added, still comfortably top 1%) and has since
+gained a clinical-phase drug in release 26.06. Interesting, but n=1.
+
+### 12.5 ML layer output files
+
+- `ml/cache/gene_families.parquet`, gene universe with group keys
+- `ml/cache/gnomad_constraint.parquet`, constraint metrics
+- `ml/cache/alphafold_features.parquet`, protein length and disorder fraction (UniProt Swiss-Prot, AlphaFold DB)
+- `ml/cache/string_features.parquet`, PPI degree and betweenness (STRING v12)
+- `ml/cache/expression_features.parquet`, tissue-specificity (tau, GTEx) and essentiality (DepMap)
+- `ml/cache/publication_features.parquet`, pub_count and year_first_described (NCBI gene2pubmed)
+- `ml/cache/training_table.parquet`, full feature matrix, 19,296 genes. Burden features (n_rare, n_lof) cover 16,725 genes (86.68% of the protein-coding universe, 91.0% of the autosome-eligible universe), the rest zero-filled per the documented missing-data convention.
+- `ml/cache/cv_folds.parquet`, fold assignments (GroupKFold, n=5)
+- `ml/cache/oos_predictions.parquet`, out-of-sample scores, labels, and ranks for whichever `--feature-set` was last run
