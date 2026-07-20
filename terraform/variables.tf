@@ -29,9 +29,9 @@ variable "availability_zones" {
 }
 
 variable "max_vcpus" {
-  description = "Max vCPUs for the Batch compute environment. Keep low until the quota increase is approved."
+  description = "Max vCPUs for the Batch compute environment. Matches the account's confirmed Spot vCPU quota in us-east-1 (8), so multiple chromosomes can run concurrently instead of one at a time. min_vcpus stays at 0 (see aws_batch_compute_environment.spot in batch.tf): a warm idle instance costs real money around the clock, while a cold start only costs a few minutes of wall clock per process."
   type        = number
-  default     = 4
+  default     = 8
 }
 
 variable "budget_limit" {

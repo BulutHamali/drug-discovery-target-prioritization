@@ -2,7 +2,7 @@
 
 An AI-driven pipeline that turns population genetic data into ML-ranked druggable targets, scored against real clinical outcomes. Nextflow on AWS Batch for the pipeline, Terraform for the infrastructure, and a leakage-safe ML layer for target prioritization.
 
-Status: in development. See `DESIGN.md` for the full design rationale.
+Status: pipeline and ML layer both complete and validated, including a prospective temporal holdout. See `DESIGN.md` for the full design rationale and the Results section below for what the model actually found. This is a portfolio project: a real but modest result, not a claim of novel drug discovery.
 
 ## What it does
 
@@ -37,20 +37,35 @@ Networking uses public subnets with an Internet Gateway and an S3 Gateway VPC En
 ## Repository layout
 
 ```
-terraform/        Infrastructure as code (VPC, Batch, IAM, S3 endpoint)
-pipeline/         Nextflow pipeline (PREPARE, ANNOTATE, BURDEN, COLLECT)
-ml/               Feature engineering, leakage-safe split, training, evaluation
+terraform/        Infrastructure as code (VPC, Batch, IAM, S3 endpoint, ECR, budget alarm)
+pipeline/         Nextflow pipeline (PREPARE, ANNOTATE, BURDEN, COLLECT), multi-chromosome capable
+ml/               Feature engineering, leakage-safe split, training, evaluation, validation scripts
 data/             Data-layer build scripts: Open Targets, ChEMBL
 DESIGN.md         Full design rationale
 README.md         This file
 ```
 
+`ml/train_eval.py` is the main ablation and evaluation script (`--compare` for
+the full feature-set comparison, `--feature-set <name>` for a single
+variant). Three standalone scripts hold analyses that intentionally do not
+touch it: `ml/validate_genetic_evidence.py` and
+`ml/validate_prospective_labels.py` (orthogonal validations, see Results
+below) and `ml/temporal_holdout.py` (the prospective temporal holdout, the
+strongest result in the project).
+
 ## Getting started
 
 ### 1. Provision infrastructure
 
+`terraform.tfvars` is gitignored (it holds `budget_alert_email`, a real
+address for the AWS Budgets alarm), so anyone cloning this repo needs to
+create their own before applying:
+
 ```
 cd terraform
+cat > terraform.tfvars <<'EOF'
+budget_alert_email = "you@example.com"
+EOF
 terraform init
 terraform apply
 ```
@@ -61,9 +76,9 @@ Tear down between work sessions to guarantee nothing is left billing:
 terraform destroy
 ```
 
-### 2. Run the pipeline (single-sample validation)
+### 2. Run the pipeline
 
-Validates the full DAG on one sample inside the default vCPU limit, before any quota increase.
+Single-chromosome mode validates the full DAG on one sample inside the default vCPU limit, before any quota increase:
 
 ```bash
 # Fetch the chr22 VCF and reference files (run from us-east-1 for zero egress)
@@ -80,6 +95,20 @@ nextflow run pipeline/main.nf -profile local
 ```
 
 Results land in `results/gene_burden_features.parquet`.
+
+Multi-chromosome mode (used for the full 22-autosome run behind the results
+below) fans the same PREPARE/ANNOTATE/BURDEN DAG out per chromosome on AWS
+Batch and feeds every chromosome's output into one COLLECT:
+
+```bash
+for c in $(seq 1 22); do bash data/fetch_1000genomes.sh $c; bash data/fetch_ref.sh $c; done
+
+nextflow run pipeline/main.nf -profile awsbatch \
+  --chroms 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22 \
+  --ecr_repository_url $(terraform -chdir=terraform output -raw ecr_repository_url) \
+  --ecr_bcftools_batch_repository_url $(terraform -chdir=terraform output -raw ecr_bcftools_batch_repository_url) \
+  --batch_job_role_arn $(terraform -chdir=terraform output -raw batch_job_role_arn)
+```
 
 ### 3. Build the ML layer (runs locally, no AWS needed)
 
@@ -122,7 +151,8 @@ python3 data/fetch_chembl_known_drugs.py
 
 # Step 8: assemble the training table (gene universe + gnomAD + AlphaFold +
 # STRING + GTEx/DepMap + publication metadata + burden + label). Requires
-# results/gene_burden_features.parquet from step 2 of the pipeline.
+# results/gene_burden_features_22chrom.parquet, the merged output of the
+# multi-chromosome pipeline run across all 22 autosomes (step 2 above).
 python3 ml/build_features.py
 
 # Step 9: GroupKFold split on gene family -- prevents paralog leakage.
@@ -132,8 +162,17 @@ python3 ml/split.py
 # Step 10: train and evaluate. Prints PR-AUC, precision@k, and enrichment
 # factor per fold and averaged, plus the study-bias check (score vs.
 # publication count, PR-AUC by pub-count tercile). Writes OOS predictions
-# to ml/cache/.
-python3 ml/train_eval.py
+# to ml/cache/. Use --compare for the full feature-set ablation table, or
+# --feature-set <name> to run and save OOS predictions for one variant
+# (the validation scripts below expect a biology_only run specifically).
+python3 ml/train_eval.py --compare
+python3 ml/train_eval.py --feature-set biology_only
+
+# Optional: three standalone validations, none of which retrain anything.
+# See the Results section below for what each one found.
+python3 ml/validate_genetic_evidence.py     # orthogonal check against Open Targets Genetics
+python3 ml/validate_prospective_labels.py   # 24.09 -> 26.06 newly-labeled genes (weak, n=30)
+python3 ml/temporal_holdout.py              # 21.06 -> 26.06 temporal holdout (strong, n=338)
 ```
 
 Outputs:
@@ -143,13 +182,200 @@ Outputs:
 - `ml/cache/string_features.parquet` -- PPI degree and betweenness (STRING v12)
 - `ml/cache/expression_features.parquet` -- tissue-specificity (tau, GTEx) and essentiality (DepMap)
 - `ml/cache/publication_features.parquet` -- pub_count and year_first_described (NCBI gene2pubmed)
-- `ml/cache/training_table.parquet` -- full feature matrix (19,296 genes, 26 columns)
+- `ml/cache/training_table.parquet` -- full feature matrix, 19,296 genes. Burden features (n_rare, n_lof) cover 16,725 genes (86.68% of the protein-coding universe, 90.9% of the autosome-eligible universe), the rest zero-filled per the documented missing-data convention.
 - `ml/cache/cv_folds.parquet` -- fold assignments (GroupKFold, n=5)
-- `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks
+- `ml/cache/oos_predictions.parquet` -- out-of-sample scores, labels, and ranks for whichever `--feature-set` was last run
+
+## Results
+
+This is a portfolio project. The result below is real but modest: measurable
+evidence that mechanistic biology features predict future clinical
+development, not a claim of having found a novel drug target.
+
+### Primary result: temporal holdout
+
+The strongest test in this project, and the only one with enough positives
+for real statistical power. Built from Open Targets' own release history
+instead of hand-assembled clinical trial dates: an old release's
+clinical-phase label is "the past," a current release is "the future."
+
+Trained on the 1,196 genes labeled at Open Targets release 21.06 (June
+2021), using a feature set with `pub_count` and STRING centrality (PPI
+degree, betweenness) **dropped, not just excluded from one ablation
+variant**, so fame-riding is ruled out by construction rather than by
+argument. Evaluated against the 338 genes that were unlabeled at 21.06 and
+gained a clinical-phase drug by release 26.06 (June 2026), a 5.0-year gap.
+
+| top fraction | observed rate | baseline mean | baseline 95% CI | enrichment |
+|---|---|---|---|---|
+| 1% | 0.056 | 0.010 | [0.000, 0.021] | 5.59x |
+| 5% | 0.178 | 0.050 | [0.027, 0.074] | 3.57x |
+| 10% | 0.322 | 0.100 | [0.071, 0.133] | 3.22x |
+| 20% | 0.533 | 0.201 | [0.160, 0.249] | 2.66x |
+
+Enrichment sits above the resampled baseline's 95% CI at every threshold
+tested. PR-AUC on the prospective set: 0.055 against a base rate of 0.0187
+(lift 2.95x). This is a stricter, narrower feature set than the main
+ablation variants below, so it is not a like-for-like comparison to them;
+that it still shows this much enrichment, with the two features most
+plausibly tracking fame removed, is the point. Full method and caveats in
+`ml/temporal_holdout.py` and DESIGN.md section 6.4.
+
+### Q1: is there real signal on understudied genes, or was the model riding study bias?
+
+**Yes, real signal.** The properly powered test is a median split by
+publication count (159 positives in the bottom half vs. 60 in the earlier
+tercile-based low group). Every feature-set variant's bottom-half lift 95%
+CI sits entirely above 1.0:
+
+| variant | bottom-half lift | 95% CI |
+|---|---|---|
+| all_features | 5.14 | [3.98, 7.25] |
+| no_pubcount | 5.53 | [4.17, 8.07] |
+| no_pubcount_no_string | 4.00 | [3.04, 5.93] |
+| biology_only | 2.66 | [2.12, 3.64] |
+
+The model beats a random ranker on understudied genes even with every
+publication-history and network-centrality feature removed (`biology_only`).
+An earlier tercile-based analysis (60 positives in the low-publication
+group) had concluded this was "not distinguishable from noise." That
+conclusion was a power artifact of an underpowered stratification, not a
+genuine null; the median split resolves it.
+
+### Q2: do discovery-history features add information beyond mechanistic biology?
+
+**Yes, measurably.** Paired bootstrap comparison of `biology_only` vs.
+`no_pubcount` on identical folds: mean difference -8.33, 95% CI
+[-16.84, -0.03], sign test 1-4 (one fold favored `biology_only`, four
+favored `no_pubcount`). The median-split CIs for the two variants do not
+overlap either: `biology_only` [2.12, 3.64] vs. `all_features` [3.98, 7.25].
+Both are genuinely different tests reaching the same conclusion: adding
+`pub_count`, `year_first_described`, and STRING centrality back in improves
+ranking performance by more than sampling noise can explain.
+
+### Open question: how much of that benefit is study bias vs. genuine biology?
+
+**Not resolved, and stated as such rather than argued around.** Descriptive
+Spearman correlation between `year_first_described` and the biology features
+already in `biology_only`:
+
+| feature | rho | p-value |
+|---|---|---|
+| loeuf | 0.203 | 6.45e-179 |
+| oe_lof | 0.166 | 5.76e-119 |
+| tau | 0.159 | 1.91e-109 |
+| oe_mis | 0.152 | 1.47e-100 |
+| pLI | -0.110 | 7.49e-53 |
+| essentiality_score | 0.073 | 2.72e-24 |
+| protein_length | -0.066 | 6.64e-20 |
+
+Max |rho| is 0.203. At n=19,296, p-values this small are not informative on
+their own; with this many genes, even trivial correlations clear any
+conventional significance threshold, so the magnitudes are what matter, and
+they are small to moderate. This table is descriptive only, not a
+decomposition: it shows discovery timing is entangled with biology, it does
+not tell us how much of `year_first_described`'s contribution in Q2 is fame
+vs. biology. Critically, `biology_only` already contains `pLI`, `loeuf`,
+`oe_mis`, `oe_lof`, and `essentiality_score`, so whatever
+`year_first_described` adds on top of `biology_only` is, by construction,
+not the signal those features already capture; these correlations cannot
+explain that gap away. A residualization scheme (regressing
+`year_first_described` on biology features and calling the residual "pure
+fame") was deliberately not implemented: that residual would contain
+technological accessibility, funding history, disease salience, and noise,
+not just fame, and is a causal claim this project cannot support.
+
+### Secondary validations, both weak, reported honestly
+
+Two smaller checks, both against real external evidence, both underpowered
+enough that a null result at any given threshold does not contradict the
+rest of these results.
+
+**Genetic evidence check** (`ml/validate_genetic_evidence.py`): among
+`biology_only`'s top-ranked unlabeled genes, checked for independent human
+genetic disease evidence (Open Targets Genetics, `associationByDatatypeDirect`
+filtered to `genetic_association`, threshold score >= 0.5). Top 50: 0.580
+observed vs. 0.501 baseline, within the baseline 95% CI [0.360, 0.640], not
+distinguishable from noise at this N. Top 100: 1.26x enrichment, above the
+baseline CI. Top 500: 1.37x enrichment, above the baseline CI. This check is
+confounded by design: genetic disease evidence makes a gene more likely to
+already attract a drug program, so it measures whether the model ranks
+toward genes the field would find interesting, not whether they are
+druggable.
+
+**24.09 to 26.06 newly-labeled check** (`ml/validate_prospective_labels.py`):
+an earlier, smaller version of the temporal holdout above, using the same
+24.09 label the main ablation trains against and a shorter gap to 26.06.
+Only 30 genes moved from unlabeled to labeled in that window, an
+underpowered sample by construction. Enrichment ratios (2.04x at top 5%,
+1.36x at top 10%, 1.84x at top 20%) were directionally consistent but none
+individually cleared the resampled baseline's 95% CI. Stated as the
+underpowered, inconclusive aggregate result it is, first. One individual
+gene is worth naming as an anecdote, not evidence: **KCNMA1** ranked
+18th of 17,789 unlabeled genes in that check and has since gained a
+clinical-phase drug in release 26.06. Interesting, but n=1.
+
+### Also solid: n_rare importance trend
+
+Across three burden-coverage levels reached over the course of this
+project (2.0% at chr22-only, 29.3% at 5 chromosomes, 86.68% at all 22
+autosomes), `n_rare`'s feature importance in `biology_only` climbed
+monotonically: 0.0112 -> 0.0352 -> 0.0714. The same monotonic climb held
+across all four ablation variants, not just `biology_only`. Burden coverage:
+86.68% of the full protein-coding universe (16,725 / 19,296 genes), 90.9%
+of the autosome-eligible universe (excludes X, Y, and MT, which the 1000
+Genomes autosome run does not cover).
+
+### Cost and scaling, measured
+
+Total spend for the full 22-autosome run: under $1. 2h32m wall clock running
+all 17 remaining autosomes concurrently on AWS Batch, versus an estimated
+~23h if run one chromosome at a time, roughly a 9x speedup from raising
+`max_vcpus` from 4 to 8. chr8 was the only chromosome whose ANNOTATE step
+needed more than the flat 4GB it started at (it needed exactly 8GB, handled
+by dynamic memory escalation rather than a static bump); bcftools csq's
+memory footprint tracks transcript density in the annotated region, not raw
+sequence length, which is why chr8 (physically smaller than chr3, chr4, and
+chr5, all of which succeeded at 4GB) was the outlier. Full breakdown in
+DESIGN.md section 9.
+
+### Limitations
+
+- **No druggability features.** The feature set has no direct measure of
+  small-molecule tractability (binding pocket detection, ligandability
+  scores). Top-ranked understudied genes skew toward essential core cellular
+  machinery (spliceosome components such as BUD31, PHF5A, PRPF38A, SNRPA1;
+  ribosomal proteins), which score well on constraint and essentiality but
+  are a famously difficult, largely undrugged target class. A high rank here
+  should be read as "biologically important and understudied," not
+  "druggable."
+- **The label itself is not monotonically increasing.** Both prospective
+  checks found genes moving from labeled back to unlabeled between Open
+  Targets releases (7 genes between 24.09 and 26.06, 4 genes between 21.06
+  and 26.06), most plausibly database churn (evidence pruning, mechanism
+  reclassification, gene ID remapping) rather than a genuine reversal of
+  clinical fact. The positive-unlabeled open-world assumption (DESIGN.md
+  section 4) already accounts for absence not meaning undruggable; this adds
+  that presence in the label is not perfectly stable either, in either
+  direction.
+- **Time-stability assumptions in the temporal holdout are unverified per
+  feature.** gnomAD constraint, burden, GTEx tau, AlphaFold protein length,
+  and DepMap essentiality were all treated as time-stable back to 2021.
+  DepMap in particular has grown substantially in cell-line count and
+  scoring methodology since then, and is flagged as the weakest of these
+  assumptions.
+- **Sample sizes vary a lot across these checks.** The temporal holdout
+  (338 prospective positives) has real power; the 24.09-to-26.06 check (30)
+  and the genetic-evidence check's top-50 slice do not, and are reported as
+  such rather than dressed up.
 
 ## Cost
 
-Target $30 to $80 for the full project. Public in-region data, Spot instances, no NAT Gateway, and `terraform destroy` between sessions keep it there. An AWS Budgets alert at $50 is set on day one. See `DESIGN.md` section 9 for the full breakdown.
+Target $30 to $80 for the full project by the original planning estimate.
+Measured actual cost for the full 22-autosome run: under $1, see Results
+above. Public in-region data, Spot instances, no NAT Gateway, and
+`terraform destroy` between sessions keep it there. An AWS Budgets alert at
+$50 is set on day one. Full breakdown in `DESIGN.md` section 9.
 
 ## Status checklist
 
@@ -157,5 +383,6 @@ Target $30 to $80 for the full project. Public in-region data, Spot instances, n
 - [x] Pipeline validated end to end on one sample
 - [x] Data layer (Open Targets, ChEMBL) built and labels defined
 - [x] ML layer built and validated locally
-- [ ] Scaling benchmark run after quota increase
-- [ ] Results writeup and architecture diagram
+- [x] Scaling benchmark run after quota increase (22 autosomes, concurrent Batch execution, under $1, 2h32m)
+- [x] Results writeup (this README's Results section, DESIGN.md sections 6 and 9)
+- [ ] Architecture diagram

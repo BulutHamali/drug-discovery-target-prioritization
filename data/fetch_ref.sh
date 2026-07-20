@@ -49,11 +49,25 @@ if [[ -s "$GFF_OUT" ]]; then
   echo "already cached: $GFF_OUT"
 else
   echo "downloading chr${CHROM} GFF3 (streaming ~800 MB -> filtering to chr${CHROM} -> cached) ..."
+  TMP_GFF="${DEST}/.tmp_chr${CHROM}.gff3"
   curl -sL "$GFF_URL" \
     | zcat \
     | awk -v c="$CHROM" '$1 == c || /^#/' \
+    > "$TMP_GFF"
+
+  # tabix requires input sorted by chromosome then start position. Ensembl's
+  # GFF3 is ordered hierarchically (a gene's transcript/exon child records
+  # immediately follow it), not strictly by position -- overlapping or
+  # nested gene models break the non-decreasing start-position order tabix
+  # needs. chr22 happens to have few enough overlaps that this went
+  # unnoticed, but chr1's much higher gene density makes an unsorted file
+  # far more likely to trip tabix (or worse, index silently wrong). Sort
+  # explicitly rather than relying on the source file's existing order.
+  (grep '^#' "$TMP_GFF"; grep -v '^#' "$TMP_GFF" | sort -k1,1 -k4,4n) \
     | bgzip \
     > "$GFF_OUT"
+  rm -f "$TMP_GFF"
+
   tabix -p gff "$GFF_OUT"
   echo "GFF3 ready: $GFF_OUT"
 fi

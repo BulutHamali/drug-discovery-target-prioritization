@@ -146,8 +146,26 @@ Enrichment factor speaks pharma's native language and signals understanding of t
 ### 6.4 Temporal holdout
 Train on targets that reached the clinic before a cutoff year, then predict which genes reached clinical stage after it, using only pre-cutoff values for time-dependent features (publication counts especially). Even a partial temporal split is the most honest "could this have prospectively found a real target" test, and almost no portfolio project does it.
 
+**Implemented** (`ml/temporal_holdout.py`), using Open Targets release history as the time machine instead of per-gene clinical trial dates: a gene's clinical-phase label in an old Open Targets release is "the past," the same gene's label in a current release is "the future." Cutoff release 21.06 (June 2021), evaluated against 26.06 (June 2026), a clean 5.0-year gap. pub_count and STRING centrality (ppi_degree, ppi_betweenness) were dropped rather than back-dated (see the module docstring for why back-dating pub_count correctly was not feasible in this pass), so this is a stricter, narrower feature set than the main ablation variants, not a like-for-like comparison to them. Trained on the 1,196 genes labeled at 21.06, evaluated against the 338 genes that were unlabeled at 21.06 and gained a clinical-phase drug by 26.06. Result: enrichment above the resampled baseline 95% CI at every threshold tested (5.59x at top 1%, 3.57x at top 5%, 3.22x at top 10%, 2.66x at top 20%), PR-AUC 0.055 against a base rate of 0.0187 (lift 2.95x). This is the strongest single result in the project: real prospective signal, with fame-riding excluded by construction rather than by argument. Full numbers in the README results section.
+
 ### 6.5 Bootstrap stability selection
 Resample, refit, keep features selected in more than X percent of runs. Reports robust biology and guards against overfitting to the famous-gene signal. SHAP + bootstrap approach drops in cleanly here.
+
+### 6.6 Evaluation methodology, as implemented
+
+This is what `ml/train_eval.py` actually does, distilled from working through the statistical corrections in this section's history.
+
+**Split.** Gene-family GroupKFold, 5 folds, groups assigned once in `ml/split.py` and never touched by any downstream analysis. Every fold assignment used anywhere in this document, including the repeated-CV variants below, is checked for zero group-key leakage before its results are trusted.
+
+**Ranking metrics with per-stratum baselines.** PR-AUC alone is not informative across strata of very different positive rates (7.8% overall, under 1% in the low-publication tercile, close to 20% in the high tercile). Every stratum's lift is PR-AUC divided by that stratum's own positive rate, not the global one, so lift greater than 1.0 means the model beats a random ranker working on that same population. This is what makes the low-tercile and bottom-half results interpretable at all: a PR-AUC of 0.03 sounds weak until you see the stratum's own baseline is 0.009.
+
+**Paired bootstrap comparison between variants on identical folds.** When two feature-set variants (say `biology_only` and `no_pubcount`) are trained and evaluated on the exact same GroupKFold split, their per-fold scores are not independent draws, they are correlated because the hard folds are hard for both variants and the easy folds are easy for both. Reporting two separate marginal confidence intervals and checking whether they overlap throws that correlation away and is therefore a systematically underpowered test: two CIs can overlap heavily while the fold-by-fold difference is consistently one-directional. The correct test resamples the paired per-fold differences directly (`bootstrap_paired_diff_ci`), preserving the pairing. This is why the paired test found statistically meaningful, consistent-direction gaps between variants in cases where the marginal CIs alone looked inconclusive.
+
+**Sign test.** A distribution-free complement to the paired bootstrap CI, since 5 folds is too few points for the bootstrap's normal-approximation intuitions to be very trustworthy on their own. Counts how many of the 5 folds favor variant A versus variant B; a lopsided count (e.g. 1-4) corroborates the bootstrap CI's direction without relying on any distributional assumption.
+
+**Repeated CV across 10 fold assignments.** GroupKFold's own fold assignment is one arbitrary draw; some of the spread seen across runs could be fold-assignment luck rather than genuine model instability. `run_repeated_cv` reruns the full training and evaluation loop 10 times with a fresh, seeded fold assignment each time (`make_group_folds`, sklearn's GroupKFold has no `random_state` so this is a hand-rolled equivalent), holding the model seed fixed, and reports the mean/std/min/max of the resulting lift across those 10 repeats. This isolates fold-assignment variance from the bootstrap's resampling variance and confirms the two are of comparable, modest size, not that one is hiding a much larger true instability.
+
+**Median split promoted to primary.** The original stratification was a publication-count tercile (roughly 60 positives per stratum), which turned out to be underpowered for the low-tercile question specifically. A 50/50 median split of the same ranking (159 positives in the bottom half versus 60 in the low tercile) answers the same "does this work on understudied genes" question with much narrower confidence intervals, and is now the headline metric; the tercile numbers are kept as a secondary, explicitly underpowered cross-check for continuity with earlier runs, not because they carry independent evidentiary weight.
 
 ---
 
@@ -176,7 +194,9 @@ Resample, refit, keep features selected in more than X percent of runs. Reports 
 
 ## 9. Cost
 
-Target: $30 to $80 for the whole project if disciplined. It can exceed $200 if a few specific things are left running. The difference is discipline, not scale. All figures are orders of magnitude; AWS pricing drifts.
+Target: $30 to $80 for the whole project if disciplined. It can exceed $200 if a few specific things are left running. The difference is discipline, not scale. All figures below this line are orders-of-magnitude estimates, kept for the original planning rationale.
+
+**Measured, full 22-autosome run:** total spend under $1. 2h32m wall clock for all 17 remaining autosomes running concurrently on Batch, versus an estimated ~23h if run one chromosome at a time, roughly a 9x speedup from raising `max_vcpus` from 4 to 8 (terraform/variables.tf). chr8 was the only chromosome whose ANNOTATE step needed more than the flat 4GB (it needed exactly 8GB; see pipeline/nextflow.config's dynamic memory escalation and the chr8 OOM incident); bcftools csq's memory footprint tracks transcript density in the region being annotated, not raw sequence length, which is why chr8 (physically smaller than chr3/4/5, which all succeeded at 4GB) was the outlier.
 
 The reason it is this cheap is the in-region data choice already made: 1000 Genomes lives in the AWS Open Data registry in us-east-1. Run compute in the same region and the source data costs nothing to store and nothing to move, removing what is normally the largest genomics bill.
 

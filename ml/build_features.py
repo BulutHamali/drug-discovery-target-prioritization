@@ -8,7 +8,14 @@ Run AFTER:
   python3 ml/fetch_string.py     -- produces ml/cache/string_features.parquet
   python3 ml/fetch_expression.py  -- produces ml/cache/expression_features.parquet
   python3 ml/fetch_publications.py -- produces ml/cache/publication_features.parquet
-  nextflow run pipeline/main.nf  -- produces results/gene_burden_features.parquet
+  nextflow run pipeline/main.nf, once per chromosome (chr22 first as a smoke
+  test, then chr1/chr2/chr17/chr19, then the remaining 17 autosomes
+  concurrently via --chroms), plus the merge step that produces
+  results/gene_burden_features_22chrom.parquet -- all 22 autosomes, X/Y
+  out of scope. See the Batch run notes for how these were merged, including
+  the one duplicate-symbol fix (CKS1B: kept the chr1 entry matching its real
+  HGNC location 1q21.3, dropped a spurious chr5 entry that was almost
+  certainly a mislabeled processed pseudogene in the GRCh37 r87 annotation).
 
 Output: ml/cache/training_table.parquet
 
@@ -25,12 +32,16 @@ Join strategy (all LEFT joins from the gene universe):
 Missing-feature handling (both explicit and documented):
 
   burden (n_rare, n_lof):
-    Fill with 0. Set has_burden=0 (flag; 1 means chr22 data is present).
-    WHY 0: a gene not on chr22 genuinely has zero observed burden from our
-    pipeline. This is accurate for the structural validation run, not an
-    approximation. When burden is extended genome-wide, has_burden will be
-    1 for every gene. The flag lets the ML layer and study-bias analysis
-    distinguish chr22 genes from the rest.
+    Fill with 0. Set has_burden=0 (flag; 1 means real burden data from one
+    of the 22 processed autosomes is present, currently 86.68% of the
+    universe).
+    WHY 0: a gene with no burden row genuinely has zero observed rare-variant
+    burden from our pipeline, either because it sits on X/Y (never
+    processed, out of scope) or because it had no qualifying rare variant
+    in this call set even though its autosome was processed. Both are
+    honest zeros, not approximations. The flag lets the ML layer and
+    study-bias analysis distinguish genes with real burden evidence from
+    the rest.
 
   gnomAD (pLI, loeuf, oe_lof, oe_mis):
     Fill with column median computed on observed genes. Set has_gnomad=0.
@@ -104,7 +115,7 @@ ALPHAFOLD_FILE  = os.path.join(CACHE_DIR, "alphafold_features.parquet")
 STRING_FILE     = os.path.join(CACHE_DIR, "string_features.parquet")
 EXPRESSION_FILE  = os.path.join(CACHE_DIR, "expression_features.parquet")
 PUBLICATION_FILE = os.path.join(CACHE_DIR, "publication_features.parquet")
-BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features.parquet")
+BURDEN_FILE      = os.path.join(RESULTS_DIR, "gene_burden_features_22chrom.parquet")
 OUT_FILE         = os.path.join(CACHE_DIR, "training_table.parquet")
 
 GNOMAD_FEAT_COLS     = ["pLI", "loeuf", "oe_lof", "oe_mis"]
@@ -140,7 +151,7 @@ def check_inputs():
         (STRING_FILE,    "ml/fetch_string.py"),
         (EXPRESSION_FILE, "ml/fetch_expression.py"),
         (PUBLICATION_FILE, "ml/fetch_publications.py"),
-        (BURDEN_FILE,    "nextflow run pipeline/main.nf -profile local"),
+        (BURDEN_FILE,    "nextflow run pipeline/main.nf per chromosome (all 22 autosomes), then merge"),
     ]:
         if not os.path.exists(path):
             errors.append(f"  missing: {path}  ->  run: {script}")
@@ -319,7 +330,9 @@ def build():
         pd.read_parquet(BURDEN_FILE, columns=["gene", "n_rare", "n_lof"])
         .rename(columns={"gene": "symbol"})
     )
-    print(f"  {len(burden):,} genes with chr22 burden data")
+    print(f"  {len(burden):,} rows in the merged 22-autosome burden table "
+          f"(all autosomes, X/Y out of scope; includes non-protein-coding "
+          f"symbols that will not match the universe join below)")
 
     # ── Join 1: label onto universe (Ensembl ID) ──────────────────────────────
     df = universe.merge(label, on="ensembl_id", how="left")
@@ -400,13 +413,14 @@ def build():
     if status == "WARN":
         print("       Outside 5-12% band. Check that label join used Ensembl ID correctly.")
 
-    # Check 3: burden coverage (expected: most genes missing, chr22-only).
+    # Check 3: burden coverage (all 22 autosomes processed; X/Y out of scope).
     n_with_burden = df["has_burden"].sum()
     n_no_burden   = len(df) - n_with_burden
-    print(f"[INFO] burden coverage: {n_with_burden:,} genes have chr22 data "
-          f"({n_with_burden/len(df):.1%} of universe)")
-    print(f"       {n_no_burden:,} genes have no chr22 burden -- filled n_rare=0, n_lof=0, has_burden=0")
-    print(f"       (this is expected for the structural validation run)")
+    print(f"[INFO] burden coverage: {n_with_burden:,} genes have real burden data "
+          f"from all 22 autosomes ({n_with_burden/len(df):.1%} of universe)")
+    print(f"       {n_no_burden:,} genes have no burden data -- either on X/Y "
+          f"(out of scope) or no qualifying rare variant in this call set -- "
+          f"filled n_rare=0, n_lof=0, has_burden=0")
 
     # Check 4: gnomAD coverage.
     n_with_gnomad = df["has_gnomad"].sum()

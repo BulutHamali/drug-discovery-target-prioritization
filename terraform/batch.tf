@@ -1,6 +1,9 @@
 # AWS Batch: Spot compute environment + job queue.
-# max_vcpus is deliberately low until the quota increase is approved.
-# The whole DAG can be validated on one small instance inside the default limit.
+# max_vcpus matches the account's confirmed Spot vCPU quota (8) in us-east-1,
+# so multiple chromosomes can run concurrently rather than one at a time.
+# min_vcpus stays at 0: a warm idle instance costs money continuously
+# (~$0.72/day observed for a single 2-vCPU instance), while scaling from
+# zero only costs a few minutes of wall clock per process.
 
 resource "aws_batch_compute_environment" "spot" {
   compute_environment_name = "${var.project_name}-spot"
