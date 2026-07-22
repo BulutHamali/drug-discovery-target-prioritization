@@ -68,6 +68,13 @@ KEEP_COLS = [
 
 NUMERIC_COLS = ["pLI", "oe_lof_upper", "oe_lof", "oe_lof_lower", "oe_mis"]
 
+# Minimum fraction of protein-coding genes (post-dedup) that must have a real
+# pLI value. Observed coverage in this project is 97.4% of the raw file
+# (19,183 / 19,689 protein-coding rows). This is a conservative floor well
+# below that, so a genuinely dead/truncated source fails loudly instead of
+# silently handing build_features.py a near-empty column to median-impute.
+MIN_PLI_COVERAGE = 0.85
+
 
 def download(url, dest):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
@@ -113,11 +120,21 @@ def build():
         )
         sys.exit(1)
 
+    assert len(df) > 0, (
+        f"FAIL: {GNOMAD_URL} downloaded to {RAW_FILE} but parsed to zero rows. "
+        f"A 200 status with an empty or unparseable body must still fail; "
+        f"inspect the raw file by hand before re-running."
+    )
+
     # Filter to protein-coding genes; other gene types (lncRNA, pseudogene, etc.)
     # are not in the label universe and would just add noise rows.
     before = len(df)
     df = df[df["gene_type"] == "protein_coding"].copy()
     print(f"protein-coding transcripts: {len(df):,}  (from {before:,} total rows)")
+    assert len(df) > 0, (
+        f"FAIL: 0 protein_coding rows after filtering {before:,} rows from "
+        f"{RAW_FILE}. gene_type schema may have changed; inspect the raw file."
+    )
 
     # Parse numeric columns; a few transcripts have '.' for missing data.
     for col in NUMERIC_COLS:
@@ -140,11 +157,19 @@ def build():
     # Sanity checks.
     n_pli   = df["pLI"].notna().sum()
     n_loeuf = df["loeuf"].notna().sum()
+    pli_coverage = n_pli / len(df)
     print(f"\nSanity checks:")
-    print(f"  genes with pLI:   {n_pli:,} / {len(df):,}  ({n_pli/len(df):.1%})")
+    print(f"  genes with pLI:   {n_pli:,} / {len(df):,}  ({pli_coverage:.1%})")
     print(f"  genes with LOEUF: {n_loeuf:,} / {len(df):,}  ({n_loeuf/len(df):.1%})")
     print(f"  pLI  range: [{df['pLI'].min():.3f}, {df['pLI'].max():.3f}]")
     print(f"  LOEUF range: [{df['loeuf'].min():.3f}, {df['loeuf'].max():.3f}]")
+    assert pli_coverage >= MIN_PLI_COVERAGE, (
+        f"FAIL: pLI coverage {pli_coverage:.1%} is below the "
+        f"{MIN_PLI_COVERAGE:.0%} floor (observed coverage historically is "
+        f"97.4%). {GNOMAD_URL} may be truncated or schema-shifted. Refusing "
+        f"to write a parquet file that would get silently median-imputed "
+        f"downstream."
+    )
 
     # pLI must be bounded [0, 1]; anything outside that means we grabbed the
     # wrong column or the file format has changed.

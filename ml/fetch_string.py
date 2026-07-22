@@ -77,6 +77,14 @@ SCORE_THRESHOLD = 700
 # Pearson r > 0.99 with exact betweenness on human-sized PPI graphs.
 BETWEENNESS_K = 500
 
+# Minimum sizes for the two raw source files, checked before any processing.
+# Observed in this project: protein.info maps 19,700 STRING proteins to gene
+# symbols, and protein.links has 13.7M total edges before score filtering.
+# Both floors are set well below those so a truncated or empty download
+# fails immediately instead of silently producing a near-empty PPI graph.
+MIN_INFO_ROWS  = 15_000
+MIN_LINKS_ROWS = 1_000_000
+
 
 def download(url, dest, label):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
@@ -100,6 +108,11 @@ def load_info(path):
         usecols=["#string_protein_id", "preferred_name"],
         dtype=str, low_memory=False,
     )
+    assert len(df) >= MIN_INFO_ROWS, (
+        f"FAIL: {STRING_INFO_URL} parsed to only {len(df):,} rows, expected "
+        f"{MIN_INFO_ROWS:,}+. File may be truncated or empty; inspect {path} "
+        f"by hand before re-running."
+    )
     df = df.rename(columns={
         "#string_protein_id": "string_id",
         "preferred_name":     "symbol",
@@ -115,8 +128,18 @@ def load_links(path, score_threshold):
         low_memory=False,
     )
     before = len(df)
+    assert before >= MIN_LINKS_ROWS, (
+        f"FAIL: {STRING_LINKS_URL} parsed to only {before:,} edges, expected "
+        f"{MIN_LINKS_ROWS:,}+. File may be truncated or empty; inspect {path} "
+        f"by hand before re-running."
+    )
     df = df[df["combined_score"] >= score_threshold].copy()
     print(f"  loaded {before:,} edges, kept {len(df):,} with score >= {score_threshold}")
+    assert len(df) > 0, (
+        f"FAIL: 0 edges survived the score >= {score_threshold} filter out of "
+        f"{before:,} total. Either the threshold or the combined_score column "
+        f"parsing is wrong."
+    )
     return df
 
 
@@ -176,6 +199,12 @@ def build(cache_dir=CACHE_DIR):
     print(f"\nSanity checks:")
     n_genes = out["symbol"].nunique()
     assert n_genes == len(out), "duplicate gene symbols in output"
+    assert n_genes >= MIN_INFO_ROWS, (
+        f"FAIL: only {n_genes:,} genes ended up with PPI features, expected "
+        f"{MIN_INFO_ROWS:,}+ (observed coverage historically is 16,201 genes). "
+        f"Something upstream (info mapping or link filtering) produced far "
+        f"fewer nodes than usual."
+    )
     print(f"  unique genes: {n_genes:,}")
     print(f"  ppi_degree    range: [{out['ppi_degree'].min()}, {out['ppi_degree'].max()}]  "
           f"median: {out['ppi_degree'].median():.0f}")

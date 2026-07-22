@@ -50,6 +50,12 @@ download_if_missing() {
   fi
   echo "downloading: $s3_uri -> $local_path"
   aws s3 cp --no-progress "$s3_uri" "$local_path"
+
+  if [[ ! -s "$local_path" ]]; then
+    echo "ERROR: $s3_uri downloaded to an empty file at $local_path." >&2
+    echo "  aws s3 cp exited 0 but wrote nothing; check the key exists." >&2
+    exit 1
+  fi
 }
 
 download_if_missing "${BUCKET}/${VCF_KEY}"    "${DEST}/chr${CHROM}.vcf.gz"

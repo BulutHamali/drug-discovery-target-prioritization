@@ -103,12 +103,23 @@ def build(url=HGNC_TSV_URL, cache_dir=CACHE_DIR):
         print("    HGNC may have renamed fields; inspect the file and adjust usecols.")
         sys.exit(1)
 
+    assert len(df) > 0, (
+        f"FAIL: {url} downloaded to {raw_path} but parsed to zero rows. "
+        f"A 200 status with an empty or unparseable body must still fail; "
+        f"inspect the raw file by hand before re-running."
+    )
+
     # Keep protein-coding genes: the label universe is protein-coding, so the
     # grouping only needs to cover those. Non-coding/pseudogenes drop out at
     # the join later anyway, but filtering here keeps the family file focused.
     before = len(df)
     df = df[df["locus_group"] == "protein-coding gene"].copy()
     print(f"protein-coding genes: {len(df):,} (from {before:,} total HGNC rows)")
+    assert len(df) > 15_000, (
+        f"FAIL: only {len(df):,} protein-coding genes found in {url}, "
+        f"expected 15,000+ (this project's gene universe is 19,296). File "
+        f"may be truncated or schema-shifted; inspect the raw file by hand."
+    )
 
     # Collapse to a single group key per gene.
     df["group_key"] = [
@@ -133,22 +144,24 @@ def build(url=HGNC_TSV_URL, cache_dir=CACHE_DIR):
     assert out["group_key"].notna().all(), "found null group_key"
     assert out["symbol"].notna().all(), "found null symbol"
 
+    print("\nVERDICT:")
+    frac = n_real_group / n_total
+    assert frac >= 0.4, (
+        f"FAIL: only {frac:.1%} of genes got a real HGNC family, below the 40% "
+        f"floor. Most genes would be singletons and the family-split would "
+        f"behave almost like a random split, silently weakening the leakage-safe "
+        f"guarantee in DESIGN.md section 6.1. Check the gene_group_id column "
+        f"parsed right, and refusing to write gene_families.parquet until it does."
+    )
+    print(f"  OK: {frac:.0%} of protein-coding genes have a real HGNC family, so")
+    print("      the family-based split will meaningfully prevent paralog leakage.")
+    print("      Singletons split as themselves, which is correct: a gene with no")
+    print("      known family cannot leak into a paralog it does not have.")
+
     os.makedirs(cache_dir, exist_ok=True)
     out_path = os.path.join(cache_dir, "gene_families.parquet")
     out.to_parquet(out_path, index=False)
     print(f"\nwrote {out_path}: {len(out):,} genes")
-
-    print("\nVERDICT:")
-    frac = n_real_group / n_total
-    if frac < 0.4:
-        print("  [!] Under 40% of genes got a real family. That is low; most genes")
-        print("      would be singletons and the family-split would behave almost")
-        print("      like a random split. Check the gene_group_id column parsed right.")
-    else:
-        print(f"  OK: {frac:.0%} of protein-coding genes have a real HGNC family, so")
-        print("      the family-based split will meaningfully prevent paralog leakage.")
-        print("      Singletons split as themselves, which is correct: a gene with no")
-        print("      known family cannot leak into a paralog it does not have.")
 
 
 if __name__ == "__main__":

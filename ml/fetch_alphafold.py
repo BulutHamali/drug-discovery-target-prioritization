@@ -55,6 +55,7 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import pandas as pd
@@ -81,6 +82,22 @@ AF_CONF_URL = (
 
 # Residues below this pLDDT score are considered disordered (Jumper et al. 2021).
 PLDDT_DISORDER_THRESHOLD = 50
+
+# Minimum fraction of real (non-NaN) disorder_fraction values required after a
+# --disorder run, checked against the final deduplicated gene-symbol table.
+# Observed coverage in this project is 98.2% of the gene universe (98.9% of
+# the raw UniProt table). This threshold exists so a dead or broken endpoint
+# fails the run instead of silently writing a near-empty column that later
+# gets median-imputed into a useless constant (see git history: this is
+# exactly what the original --disorder bug did).
+MIN_DISORDER_COVERAGE = 0.90
+
+# If this many consecutive live network requests fail, stop immediately
+# instead of grinding through ~20,000 requests against a dead endpoint before
+# finding out. A handful of individual 404s for real (e.g. withdrawn/obsolete
+# UniProt IDs) is expected and tolerated; a long unbroken failure streak means
+# the endpoint itself is down.
+MAX_CONSECUTIVE_FAILURES = 50
 
 
 def download_uniprot(dest):
@@ -135,12 +152,38 @@ def fetch_disorder(uniprot_ids, cache_dir):
 
     Per-protein JSON responses are cached under cache_dir/af_confidence/ so
     that interrupted runs can resume without re-querying completed proteins.
+    AlphaFold DB does not have a model for every Swiss-Prot accession (very
+    large proteins and some others are genuinely absent); a confirmed 404 is
+    cached as a permanent negative result (a distinct JSON sentinel) so it is
+    not re-requested over the network on every future run, and so it does not
+    get confused with an endpoint failure below.
+
+    Fail-loud guard, and why it is not "any exception == dead endpoint":
+    a plain 404 for a specific accession is the server correctly answering
+    "no model for this protein," a normal and expected outcome documented at
+    roughly 98% coverage, not a sign anything is broken. Only failures where
+    the server did NOT give that clean answer (timeouts, connection errors,
+    5xx, malformed JSON on what should be a 200) count toward the "is the
+    endpoint itself broken" circuit breaker: a long unbroken run of THOSE
+    means the endpoint is down, and raises immediately instead of silently
+    NaN-ing thousands of requests (this is exactly how the original
+    --disorder bug produced a fully-empty column that got median-imputed
+    without error). An earlier version of this guard treated every 404 as a
+    failure too, which misfired: the handful of genes AlphaFold DB has never
+    modeled are never cached as failures (nothing to cache, they errored),
+    so they get retried every run, and when several happen to land next to
+    each other in iteration order they can trip a naive "N consecutive
+    failures" counter even though the endpoint is perfectly healthy.
     """
     conf_dir = os.path.join(cache_dir, "af_confidence")
     os.makedirs(conf_dir, exist_ok=True)
+    NOT_FOUND = {"__not_found__": True}
 
     result = {}
     n = len(uniprot_ids)
+    consecutive_endpoint_failures = 0
+    n_attempted = 0
+    n_endpoint_failed = 0
     for i, uid in enumerate(uniprot_ids):
         if i % 500 == 0:
             print(f"  pLDDT {i:,}/{n:,} ...")
@@ -153,6 +196,7 @@ def fetch_disorder(uniprot_ids, cache_dir):
             except (json.JSONDecodeError, OSError):
                 data = None
         else:
+            n_attempted += 1
             url = AF_CONF_URL.format(uid=uid)
             try:
                 with urllib.request.urlopen(url, timeout=15) as r:
@@ -161,14 +205,63 @@ def fetch_disorder(uniprot_ids, cache_dir):
                 with open(cache_path, "w") as f:
                     json.dump(data, f)
                 time.sleep(0.05)  # respect EBI rate limits
-            except Exception:
+                consecutive_endpoint_failures = 0
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    # Confirmed answer: this accession has no AlphaFold model.
+                    # Cache it as a permanent negative so it is never
+                    # re-requested, and do not count it against the endpoint's
+                    # health.
+                    data = NOT_FOUND
+                    with open(cache_path, "w") as f:
+                        json.dump(data, f)
+                    time.sleep(0.05)
+                    consecutive_endpoint_failures = 0
+                else:
+                    n_endpoint_failed += 1
+                    consecutive_endpoint_failures += 1
+                    if consecutive_endpoint_failures >= MAX_CONSECUTIVE_FAILURES:
+                        raise RuntimeError(
+                            f"AlphaFold DB prediction API: {consecutive_endpoint_failures} "
+                            f"consecutive non-404 failures (last: {uid}, HTTP "
+                            f"{exc.code}, URL pattern {AF_CONF_URL}, error: {exc}). "
+                            f"Stopping instead of grinding through the remaining "
+                            f"{n - i - 1:,} proteins against what looks like a broken "
+                            f"endpoint. Run python3 ml/check_endpoints.py to confirm."
+                        ) from exc
+                    result[uid] = float("nan")
+                    continue
+            except Exception as exc:
+                n_endpoint_failed += 1
+                consecutive_endpoint_failures += 1
+                if consecutive_endpoint_failures >= MAX_CONSECUTIVE_FAILURES:
+                    raise RuntimeError(
+                        f"AlphaFold DB prediction API: {consecutive_endpoint_failures} "
+                        f"consecutive live requests failed with no HTTP response "
+                        f"(last: {uid}, URL pattern {AF_CONF_URL}, error: {exc}). "
+                        f"Stopping instead of grinding through the remaining "
+                        f"{n - i - 1:,} proteins against what looks like a dead "
+                        f"endpoint. Run python3 ml/check_endpoints.py to confirm."
+                    ) from exc
                 result[uid] = float("nan")
                 continue
 
+        # Works identically whether data is a fresh NOT_FOUND dict or one
+        # reloaded from cache (a different object, same content): neither
+        # has "fractionPlddtVeryLow", so both fall through to NaN correctly.
         if data and "fractionPlddtVeryLow" in data:
             result[uid] = data["fractionPlddtVeryLow"]
         else:
             result[uid] = float("nan")
+
+    if n_attempted > 0 and n_endpoint_failed / n_attempted > 0.5:
+        raise RuntimeError(
+            f"AlphaFold DB prediction API: {n_endpoint_failed:,} / {n_attempted:,} "
+            f"live requests failed with no clean HTTP response (>50%). Endpoint "
+            f"{AF_CONF_URL} is likely broken or rate-limiting. Refusing to write "
+            f"a mostly-empty disorder_fraction column. Run "
+            f"python3 ml/check_endpoints.py to confirm."
+        )
 
     return pd.Series(result, name="disorder_fraction")
 
@@ -209,7 +302,12 @@ def build(fetch_disorder_flag=False, cache_dir=CACHE_DIR):
 
     print(f"\nSanity checks:")
     n_len = df["protein_length"].notna().sum()
-    assert n_len > 15_000, f"only {n_len} proteins with length -- check TSV parsing"
+    assert n_len > 15_000, (
+        f"FAIL: UniProt Swiss-Prot ({UNIPROT_URL}) returned only {n_len:,} "
+        f"proteins with a parsed length, expected 15,000+. Either the TSV "
+        f"format changed or the response was empty/truncated. Check "
+        f"{raw_path} by hand before re-running."
+    )
     assert (df["protein_length"].dropna() > 0).all(), "non-positive protein length found"
     print(f"  genes with protein_length:  {n_len:,} / {len(df):,}")
     print(f"  length range: [{int(df['protein_length'].min())} .. {int(df['protein_length'].max())}] aa")
@@ -217,7 +315,16 @@ def build(fetch_disorder_flag=False, cache_dir=CACHE_DIR):
 
     if fetch_disorder_flag:
         n_dis = df["disorder_fraction"].notna().sum()
-        print(f"  genes with disorder_fraction: {n_dis:,} / {len(df):,}")
+        coverage = n_dis / len(df)
+        print(f"  genes with disorder_fraction: {n_dis:,} / {len(df):,} ({coverage:.1%})")
+        assert coverage >= MIN_DISORDER_COVERAGE, (
+            f"FAIL: disorder_fraction coverage {coverage:.1%} is below the "
+            f"{MIN_DISORDER_COVERAGE:.0%} floor (observed coverage historically "
+            f"is 98.2%). Refusing to write a parquet file that would get "
+            f"silently median-imputed into a near-constant column downstream. "
+            f"Check the AlphaFold DB prediction API is up: "
+            f"python3 ml/check_endpoints.py"
+        )
         print(f"  median disorder_fraction: {df['disorder_fraction'].median():.3f}")
 
     df.to_parquet(out_path, index=False)

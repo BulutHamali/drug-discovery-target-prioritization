@@ -83,6 +83,15 @@ DEPMAP_RAW = os.path.join(CACHE_DIR, "depmap_24q4_crispr_gene_effect.csv")
 
 OUT_FILE = os.path.join(CACHE_DIR, "expression_features.parquet")
 
+# Minimum shapes for the two raw sources, checked right after parsing.
+# Observed in this project: GTEx's own GCT header declares 56,200 genes;
+# DepMap has 1,178 cell lines (rows) and 17,916 genes (columns). Both floors
+# are set well below those so a truncated or empty download fails
+# immediately instead of silently producing a near-empty feature.
+MIN_GTEX_GENES        = 40_000
+MIN_DEPMAP_CELL_LINES = 500
+MIN_DEPMAP_GENES      = 10_000
+
 
 def download(url, dest, label):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
@@ -114,6 +123,11 @@ def load_gtex_tau(path):
     df = pd.read_csv(io.StringIO(raw), sep="\t")
     print(f"  loaded {len(df):,} GTEx genes x "
           f"{len(df.columns) - 2} tissues")
+    assert len(df) >= MIN_GTEX_GENES, (
+        f"FAIL: {GTEX_URL} parsed to only {len(df):,} genes, expected "
+        f"{MIN_GTEX_GENES:,}+ (the file's own header declares 56,200). "
+        f"File may be truncated or empty; inspect {path} by hand."
+    )
 
     tissue_cols = [c for c in df.columns if c not in ("Name", "Description")]
     tpm = df[tissue_cols].to_numpy(dtype=float)
@@ -155,6 +169,16 @@ def load_depmap_essentiality(path):
     """
     df = pd.read_csv(path, index_col=0, low_memory=False)
     print(f"  loaded {len(df):,} cell lines x {len(df.columns):,} genes")
+    assert len(df) >= MIN_DEPMAP_CELL_LINES, (
+        f"FAIL: {DEPMAP_URL} parsed to only {len(df):,} cell lines, expected "
+        f"{MIN_DEPMAP_CELL_LINES:,}+. File may be truncated or empty; "
+        f"inspect {path} by hand."
+    )
+    assert len(df.columns) >= MIN_DEPMAP_GENES, (
+        f"FAIL: {DEPMAP_URL} parsed to only {len(df.columns):,} gene columns, "
+        f"expected {MIN_DEPMAP_GENES:,}+. File may be truncated or empty; "
+        f"inspect {path} by hand."
+    )
 
     mean_effect = df.mean(axis=0, skipna=True)
     symbols = mean_effect.index.str.replace(r"\s*\(\d+\)$", "", regex=True)

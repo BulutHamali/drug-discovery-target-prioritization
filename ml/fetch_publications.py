@@ -90,6 +90,12 @@ HUMAN_TAXID = "9606"
 
 OUT_FILE = os.path.join(CACHE_DIR, "publication_features.parquet")
 
+# If more than this fraction of esummary batches fail, the endpoint itself is
+# broken (rate-limited, down, or schema-changed), not a handful of bad PMIDs.
+# Observed in this project: batches resolve essentially completely (0 logged
+# failures). This floor still tolerates real, occasional single-batch drops.
+MAX_ESUMMARY_BATCH_FAILURE_RATE = 0.20
+
 
 def download(url, dest, label):
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
@@ -112,6 +118,11 @@ def load_entrez_to_symbol(hgnc_path):
         usecols=["symbol", "entrez_id", "locus_group"],
     )
     df = df[(df["locus_group"] == "protein-coding gene") & df["entrez_id"].notna()]
+    assert len(df) > 15_000, (
+        f"FAIL: {HGNC_TSV_URL} yielded only {len(df):,} protein-coding genes "
+        f"with an Entrez GeneID, expected 15,000+. File may be truncated or "
+        f"schema-shifted; inspect {hgnc_path} by hand."
+    )
     return dict(zip(df["entrez_id"], df["symbol"]))
 
 
@@ -139,14 +150,29 @@ def load_human_gene2pubmed(path):
     df["PubMed_ID"] = df["PubMed_ID"].astype(int)
     print(f"  scanned {n_seen:,} gene2pubmed rows (all organisms), "
           f"kept {len(df):,} human (tax_id {HUMAN_TAXID}) rows")
+    assert len(df) > 100_000, (
+        f"FAIL: {GENE2PUBMED_URL} yielded only {len(df):,} human (tax_id "
+        f"{HUMAN_TAXID}) rows out of {n_seen:,} scanned, expected 100,000+. "
+        f"File may be truncated, empty, or tax_id filtering broke; inspect "
+        f"{path} by hand."
+    )
     return df
 
 
 def resolve_years(pmids):
-    """Batch-resolve PubMed IDs to publication year via NCBI esummary."""
+    """
+    Batch-resolve PubMed IDs to publication year via NCBI esummary.
+
+    Fail-loud guard: an occasional dropped batch (transient network blip) is
+    tolerated and just skips those PMIDs. If more than
+    MAX_ESUMMARY_BATCH_FAILURE_RATE of all batches fail, the endpoint itself
+    is treated as broken and this raises instead of quietly returning a
+    mostly-empty year_by_pmid mapping.
+    """
     pmids = sorted(set(int(p) for p in pmids))
     year_by_pmid = {}
     n_batches = (len(pmids) + ESUMMARY_BATCH - 1) // ESUMMARY_BATCH
+    n_batch_failures = 0
 
     for i in range(0, len(pmids), ESUMMARY_BATCH):
         batch = pmids[i:i + ESUMMARY_BATCH]
@@ -163,6 +189,7 @@ def resolve_years(pmids):
                 import json
                 data = json.load(r)
         except Exception as exc:
+            n_batch_failures += 1
             print(f"  [!] esummary batch failed, skipping {len(batch)} PMIDs: {exc}",
                   file=sys.stderr)
             time.sleep(ESUMMARY_SLEEP)
@@ -176,6 +203,16 @@ def resolve_years(pmids):
                 year_by_pmid[int(uid)] = int(m.group(1))
 
         time.sleep(ESUMMARY_SLEEP)
+
+    failure_rate = n_batch_failures / n_batches if n_batches else 0.0
+    if failure_rate > MAX_ESUMMARY_BATCH_FAILURE_RATE:
+        raise RuntimeError(
+            f"NCBI esummary ({ESUMMARY_URL}): {n_batch_failures:,} / "
+            f"{n_batches:,} batches failed ({failure_rate:.1%}), above the "
+            f"{MAX_ESUMMARY_BATCH_FAILURE_RATE:.0%} floor. Endpoint is likely "
+            f"down or rate-limiting. Refusing to write a mostly-unresolved "
+            f"year_first_described column."
+        )
 
     return year_by_pmid
 
@@ -207,7 +244,14 @@ def build():
     year_by_pmid = resolve_years(per_gene["min_pmid"].unique())
     per_gene["year_first_described"] = per_gene["min_pmid"].map(year_by_pmid)
     n_resolved = per_gene["year_first_described"].notna().sum()
-    print(f"  resolved {n_resolved:,} / {len(per_gene):,} years")
+    resolved_frac = n_resolved / len(per_gene)
+    print(f"  resolved {n_resolved:,} / {len(per_gene):,} years ({resolved_frac:.1%})")
+    assert resolved_frac >= 0.85, (
+        f"FAIL: only {resolved_frac:.1%} of genes got a resolved "
+        f"year_first_described via esummary, expected 85%+ (this project "
+        f"resolves essentially all of them). NCBI esummary may be down or "
+        f"rate-limiting; refusing to write a mostly-unresolved column."
+    )
 
     out = per_gene[["symbol", "pub_count", "year_first_described"]].copy()
 

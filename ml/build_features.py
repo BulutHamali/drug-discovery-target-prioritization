@@ -132,6 +132,47 @@ STRING_FEAT_COLS     = ["ppi_degree", "ppi_betweenness"]
 EXPRESSION_FEAT_COLS = ["tau", "essentiality_score"]
 PUBLICATION_FEAT_COLS = ["pub_count", "year_first_described"]
 
+# Minimum fraction of the gene universe that must have a REAL (non-imputed)
+# value before imputation is allowed to proceed for that column. Each
+# threshold is set just below the coverage actually observed in this project,
+# so normal biological missingness (a gene genuinely absent from a source)
+# stays under the floor while a source fetch that failed or silently
+# returned near-nothing does not. This is the fix for the root-cause bug: a
+# 404'd AlphaFold endpoint used to leave disorder_fraction fully missing,
+# which fill_alphafold_missing() would median-impute into a useless constant
+# column without any error. Now that gets caught here, before imputation,
+# instead of silently downstream. See DESIGN.md section 13 for the history.
+MIN_COVERAGE = {
+    "gnomad":        0.85,  # observed 94.6% (pLI/loeuf/oe_lof/oe_mis share one flag)
+    "burden":        0.70,  # observed 86.7% (n_rare/n_lof; X/Y genes are legitimately out of scope)
+    "alphafold":     0.90,  # observed 98.9% (protein_length)
+    "disorder":      0.90,  # observed 98.2%, only enforced if --disorder was actually run (see below)
+    "string":        0.65,  # observed 81.0% (ppi_degree/ppi_betweenness; no edge is a real zero, but near-0% coverage means the fetch or join broke)
+    "tau":           0.80,  # observed 92.1%
+    "essentiality":  0.80,  # observed 92.0%
+    "pub_count":     0.90,  # observed 99.7%
+    "year_described": 0.90,  # observed 99.7%
+}
+
+
+def check_coverage(name, n_real, n_total, extra=""):
+    """
+    Hard-fail if a source's real (non-imputed) coverage of the gene universe
+    falls below its conservative floor. This is what stops a failed or
+    near-empty fetch from being silently imputed into a useless column: a
+    genuine "this gene has no value" case never comes close to these floors
+    in practice, only a broken source does.
+    """
+    coverage = n_real / n_total
+    threshold = MIN_COVERAGE[name]
+    assert coverage >= threshold, (
+        f"FAIL: {name} coverage is {coverage:.1%} ({n_real:,} / {n_total:,}), "
+        f"below the {threshold:.0%} floor. {extra} Refusing to impute a "
+        f"column with this little real data; re-run the source fetch script "
+        f"and check python3 ml/check_endpoints.py before retrying."
+    )
+    return coverage
+
 
 def find_ot_drug_files():
     """
@@ -338,6 +379,11 @@ def build():
     print("loading AlphaFold/UniProt protein features ...")
     alphafold = load_alphafold()
     print(f"  {len(alphafold):,} genes with protein_length")
+    # disorder_fraction is gated behind --disorder in fetch_alphafold.py, so
+    # "no real values in the raw file" legitimately means "never attempted"
+    # and must not trip the coverage check below; this flag distinguishes
+    # that from "attempted, joined, and came back near-empty."
+    disorder_was_attempted = alphafold["disorder_fraction"].notna().any()
 
     # ── STRING PPI features ──────────────────────────────────────────────────
     print("loading STRING PPI features ...")
@@ -393,30 +439,63 @@ def build():
                 df.loc[missing_gnomad, "symbol"].map(gnomad_by_sym[col])
             )
 
+    check_coverage("gnomad", df["pLI"].notna().sum(), len(df),
+                    extra="ml/fetch_gnomad.py may have failed or joined on the wrong key.")
     df, gnomad_medians = fill_gnomad_missing(df)
 
     # ── Join 3: burden onto universe (gene symbol) ────────────────────────────
     df = df.merge(burden, on="symbol", how="left")
     df["has_burden"] = df["n_rare"].notna().astype(int)
+    check_coverage("burden", df["has_burden"].sum(), len(df),
+                    extra="The Nextflow pipeline's results/gene_burden_features.parquet "
+                          "may be incomplete (missing autosomes) or the symbol join broke.")
     df["n_rare"] = df["n_rare"].fillna(0).astype(int)
     df["n_lof"]  = df["n_lof"].fillna(0).astype(int)
 
     # ── Join 4: AlphaFold/UniProt protein length onto universe (gene symbol) ──
     df = df.merge(alphafold, on="symbol", how="left")
+    check_coverage("alphafold", df["protein_length"].notna().sum(), len(df),
+                    extra="ml/fetch_alphafold.py may have failed or joined on the wrong key.")
+    if disorder_was_attempted:
+        check_coverage("disorder", df["disorder_fraction"].notna().sum(), len(df),
+                        extra="disorder_fraction was fetched (--disorder was passed) but came "
+                              "back near-empty; this is the exact AlphaFold-endpoint bug this "
+                              "check exists to catch. Re-run ml/fetch_alphafold.py --disorder "
+                              "after confirming the endpoint is up.")
+    else:
+        print("  [INFO] disorder_fraction: no real values in the raw AlphaFold cache "
+              "(ml/fetch_alphafold.py was not run with --disorder); skipping the coverage "
+              "check and imputing has_disorder=0 for every gene, as intended.")
     df, alphafold_medians = fill_alphafold_missing(df)
 
     # ── Join 5: STRING PPI features onto universe (gene symbol) ──────────────
     df = df.merge(string_feats, on="symbol", how="left")
     df["has_string"] = df["ppi_degree"].notna().astype(int)
+    check_coverage("string", df["has_string"].sum(), len(df),
+                    extra="ml/fetch_string.py may have failed or joined on the wrong key "
+                          "(a real absence of any high-confidence edge is expected for some "
+                          "genes, but not for this large a fraction of the universe).")
     df["ppi_degree"]      = df["ppi_degree"].fillna(0).astype(int)
     df["ppi_betweenness"] = df["ppi_betweenness"].fillna(0.0)
 
     # ── Join 6: expression/essentiality onto universe (gene symbol) ──────────
     df = df.merge(expression, on="symbol", how="left")
+    check_coverage("tau", df["tau"].notna().sum(), len(df),
+                    extra="ml/fetch_expression.py's GTEx source may have failed or joined "
+                          "on the wrong key.")
+    check_coverage("essentiality", df["essentiality_score"].notna().sum(), len(df),
+                    extra="ml/fetch_expression.py's DepMap source may have failed or joined "
+                          "on the wrong key.")
     df, expression_medians = fill_expression_missing(df)
 
     # ── Join 7: publication metadata onto universe (gene symbol) ─────────────
     df = df.merge(publications, on="symbol", how="left")
+    check_coverage("pub_count", df["pub_count"].notna().sum(), len(df),
+                    extra="ml/fetch_publications.py's gene2pubmed source may have failed "
+                          "or joined on the wrong key.")
+    check_coverage("year_described", df["year_first_described"].notna().sum(), len(df),
+                    extra="ml/fetch_publications.py's esummary year resolution may have "
+                          "failed.")
     df, publication_medians = fill_publication_missing(df)
 
     # ── Required checks ───────────────────────────────────────────────────────

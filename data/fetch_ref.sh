@@ -50,10 +50,20 @@ if [[ -s "$GFF_OUT" ]]; then
 else
   echo "downloading chr${CHROM} GFF3 (streaming ~800 MB -> filtering to chr${CHROM} -> cached) ..."
   TMP_GFF="${DEST}/.tmp_chr${CHROM}.gff3"
-  curl -sL "$GFF_URL" \
+  # -f makes curl exit non-zero on HTTP 4xx/5xx instead of silently piping an
+  # HTML error page into zcat. Without -f this only failed by accident, when
+  # zcat rejected the non-gzip error body; -f makes that fail-loud on purpose.
+  curl -fsSL "$GFF_URL" \
     | zcat \
     | awk -v c="$CHROM" '$1 == c || /^#/' \
     > "$TMP_GFF"
+
+  if [[ ! -s "$TMP_GFF" ]]; then
+    echo "ERROR: filtered GFF3 for chr${CHROM} is empty. Either chr${CHROM} has" >&2
+    echo "  no records in the source file, or the awk chromosome filter (\$1 == \"$CHROM\") is wrong." >&2
+    rm -f "$TMP_GFF"
+    exit 1
+  fi
 
   # tabix requires input sorted by chromosome then start position. Ensembl's
   # GFF3 is ordered hierarchically (a gene's transcript/exon child records
@@ -82,7 +92,14 @@ if [[ -s "$FA_OUT" ]]; then
   echo "already cached: $FA_OUT"
 else
   echo "downloading chr${CHROM} FASTA ..."
-  curl -sL "$FA_URL" | zcat > "$FA_OUT"
+  curl -fsSL "$FA_URL" | zcat > "$FA_OUT"
+
+  if [[ ! -s "$FA_OUT" ]]; then
+    echo "ERROR: FASTA download for chr${CHROM} is empty. Check $FA_URL is reachable." >&2
+    rm -f "$FA_OUT"
+    exit 1
+  fi
+
   samtools faidx "$FA_OUT"
   echo "FASTA ready: $FA_OUT"
 fi

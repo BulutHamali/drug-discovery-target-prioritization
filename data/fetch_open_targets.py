@@ -83,6 +83,7 @@ def fetch_dataset(release_url: str, dataset_path: str, dest_root: Path) -> None:
         print(f"  ERROR listing {dataset_url}: {e}", file=sys.stderr)
         sys.exit(1)
 
+    n_downloaded = 0
     parquet_files = [f for f in files if f.endswith(".parquet") or f.startswith("part-")]
     if not parquet_files:
         # Partitioned directory — list one level deeper
@@ -95,11 +96,23 @@ def fetch_dataset(release_url: str, dataset_path: str, dest_root: Path) -> None:
                     for sf in sub_files:
                         if sf.endswith(".parquet") or sf.startswith("part-"):
                             download_file(f"{sub_url}/{sf}", sub_dest / sf)
+                            n_downloaded += 1
                 except Exception:
                     download_file(f"{dataset_url}/{part}", dest_dir / part)
+                    n_downloaded += 1
     else:
         for fname in parquet_files:
             download_file(f"{dataset_url}/{fname}", dest_dir / fname)
+            n_downloaded += 1
+
+    if n_downloaded == 0:
+        print(
+            f"  ERROR: {dataset_url} listed {len(files)} entries but none "
+            f"were recognized as Parquet data (looked for .parquet / part- / "
+            f"'=' partition names). Entries found: {files}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def main() -> None:
