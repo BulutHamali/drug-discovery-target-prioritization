@@ -82,9 +82,9 @@ def forest_plot():
     nearly touch rather than cleanly separate (Q2, weaker than before
     disorder_fraction was added, see README.md Q2 section)."""
     variants = ["all_features", "no_pubcount", "no_pubcount_no_string", "biology_only"]
-    lift = np.array([5.28, 5.62, 4.52, 2.76])
-    ci_lo = np.array([3.99, 4.15, 3.34, 2.17])
-    ci_hi = np.array([7.76, 8.13, 7.04, 4.00])
+    lift = np.array([5.26, 5.60, 4.52, 2.68])
+    ci_lo = np.array([3.97, 4.16, 3.27, 2.17])
+    ci_hi = np.array([7.65, 8.21, 7.04, 3.85])
 
     y_pos = np.arange(len(variants))[::-1]
 
@@ -126,7 +126,7 @@ def n_rare_trend():
              the only stage still reproducible from the current repo state)
     """
     coverage = np.array([2.0, 29.3, 86.68])
-    importance = np.array([0.0112, 0.0352, 0.0714])
+    importance = np.array([0.0112, 0.0352, 0.0678])
 
     fig, ax = plt.subplots(figsize=(7, 5), dpi=150)
 

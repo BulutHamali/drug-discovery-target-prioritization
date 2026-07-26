@@ -205,10 +205,10 @@ Same pool, same 338 prospective positives, same thresholds, same resampled basel
 
 | variant | bottom-half lift | 95% CI |
 |---|---|---|
-| all_features | 5.28 | [3.99, 7.76] |
-| no_pubcount | 5.62 | [4.15, 8.13] |
-| no_pubcount_no_string | 4.52 | [3.34, 7.04] |
-| biology_only | 2.76 | [2.17, 4.00] |
+| all_features | 5.26 | [3.97, 7.65] |
+| no_pubcount | 5.60 | [4.16, 8.21] |
+| no_pubcount_no_string | 4.52 | [3.27, 7.04] |
+| biology_only | 2.68 | [2.17, 3.85] |
 
 ![Forest plot of median-split lift by feature set, with 95% CIs and a reference line at 1.0.](docs/figures/median_split_forest.png)
 
@@ -216,13 +216,13 @@ Every variant clears 1.0 (real signal, not study bias). `biology_only` and `all_
 
 ### n_rare importance trend, SHAP, stability selection, and secondary checks
 
-`n_rare`'s feature importance in `biology_only` climbed monotonically with burden coverage across three stages of this project: 0.0112 (2.0%) -> 0.0352 (29.3%) -> 0.0714 (86.68%), consistent across all four variants.
+`n_rare`'s feature importance in `biology_only` climbed monotonically with burden coverage across three stages of this project: 0.0112 (2.0%) -> 0.0352 (29.3%) -> 0.0678 (86.68%), consistent across all four variants.
 
 ![n_rare feature importance climbing monotonically with burden coverage across three stages of this project](docs/figures/n_rare_trend.png)
 
 The 13.32% burden coverage gap is two different things, not one: 896 genes on X/Y, out of scope by design, and 1,675 that are genuine missingness (no qualifying rare variant, or a symbol gap between GFF3 and HGNC).
 
-SHAP and `feature_importances_` broadly agree on what matters. Bootstrap stability selection (50 resamples) confirms the core biology features are selected 96-100% of the time, not a lucky sample. Two smaller external-evidence checks are directionally consistent but individually underpowered (one gene, KCNMA1, is a notable n=1 anecdote: ranked top 1% and later gained a clinical-phase drug). Full numbers in DESIGN.md sections 12.1 and 12.4.
+SHAP and `feature_importances_` broadly agree on what matters. Bootstrap stability selection (50 resamples) shows real, above-noise selection, not a uniform 96-100% though: `biology_only` holds every core feature at 98-100%, while the other three variants each have at least one core feature dip to 64-74% (`n_rare` and `loeuf` in `no_pubcount`, `pLI` in `no_pubcount_no_string`), and in `all_features` the three gnomAD constraint metrics (`pLI`, `loeuf`, `oe_lof`) drop out of the top 10 entirely. Two smaller external-evidence checks are directionally consistent but individually underpowered (one gene, KCNMA1, is a notable n=1 anecdote: ranked top 1% and later gained a clinical-phase drug). Full numbers in DESIGN.md sections 12.1 and 12.4.
 
 ### Cost
 

@@ -289,15 +289,24 @@ contributor was the working assumption before this run).
 **Bootstrap stability selection** (50 row-level resamples of the full
 training set, refit each time, tracks how often each feature lands in the
 top 10 by `feature_importances_`, features selected in more than 70% of
-resamples flagged as stable): the core biology features, gnomAD
-constraint (`pLI`, `loeuf`, `oe_mis`, `oe_lof`), burden (`n_rare`),
-expression (`tau`, `essentiality_score`), and structure (`protein_length`,
-`disorder_fraction`), are selected in 96 to 100% of resamples across all
-four variants. `pub_count` and `year_first_described`, where present, are
-also stable at 100%, consistent with real (if confounded) predictive
-signal rather than noise. `n_lof` and `ppi_betweenness` are the least
-stable features, near the bottom of most variants' top 10 or absent from
-it in some resamples.
+resamples flagged as stable): `tau`, `essentiality_score`,
+`protein_length`, and `disorder_fraction` hold 100% in every variant, but
+gnomAD constraint (`pLI`, `loeuf`, `oe_lof`) and `n_rare` are not
+uniformly 96-100% across variants as an earlier version of this section
+claimed. `biology_only` holds all of them at 98-100%. The other three
+variants lose ground on at least one once
+`ppi_degree`/`ppi_betweenness`/`pub_count`/`year_first_described` compete
+for a top-10 slot: `all_features` drops `pLI`, `loeuf`, and `oe_lof` out
+of the top 10 entirely and `n_rare` to 64%; `no_pubcount` keeps `loeuf`
+at 68% but still drops `pLI` and `oe_lof`, with `n_rare` at 74%;
+`no_pubcount_no_string` drops `pLI` to 64% while `loeuf`, `oe_mis`, and
+`n_rare` hold at 100%. `pub_count` and `year_first_described`, where
+present, are stable at 100%. `n_lof` is 98% stable in the two variants
+without STRING or `pub_count` (`no_pubcount_no_string`, `biology_only`)
+but doesn't clear the top 10 often enough to report in the other two.
+`ppi_betweenness`, contrary to an earlier version of this section, is
+100% stable in both variants that include it -- not the least stable
+feature.
 
 **Fetching `disorder_fraction` required a real fix, not just a flag flip.**
 `ml/fetch_alphafold.py`'s `--disorder` flag pointed at a dead AlphaFold DB
