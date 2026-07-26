@@ -278,9 +278,10 @@ longer version.
 **SHAP** (`shap.TreeExplainer` on the same full-data model used for
 `feature_importances_`): the two importance mechanisms broadly agree, and
 where they disagree, the disagreement is informative. In `biology_only`,
-`feature_importances_` ranks `tau` first (0.213) and `disorder_fraction`
-fourth (0.120); SHAP ranks them essentially tied for first (`tau` 0.373,
-`disorder_fraction` 0.371), both well clear of everything else. Both
+`feature_importances_` ranks `tau` first (0.209) and `disorder_fraction`
+fifth (0.115, just behind `oe_mis` at 0.122); SHAP ranks them essentially
+tied for first (`disorder_fraction` 0.373, `tau` 0.370), both well clear
+of everything else. Both
 methods agree `disorder_fraction` is a top-tier contributor, not a minor
 one, contrary to what was expected going in (a real but likely secondary
 contributor was the working assumption before this run).

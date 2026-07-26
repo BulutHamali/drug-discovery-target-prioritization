@@ -196,7 +196,7 @@ Same pool, same 338 prospective positives, same thresholds, same resampled basel
 | pLI | 1.47x | 1.37x | 1.65x | 2.01x | 0.0282 | 1.51x |
 | oe_mis | 3.53x | 2.62x | 2.51x | 1.96x | 0.0361 | 1.93x |
 | essentiality_score | 14.71x | 4.76x | 2.75x | 1.76x | 0.0939 | 5.03x |
-| disorder_fraction | 2.94x | 2.68x | 2.13x | 1.62x | 0.0311 | 1.67x |
+| disorder_fraction | 2.94x | 2.74x | 2.13x | 1.62x | 0.0311 | 1.67x |
 | protein_length | 2.06x | 1.19x | 0.92x | 0.93x | 0.0188 | 1.01x |
 
 `essentiality_score` alone beats the trained model (5.03x vs. 2.95x lift), partly because 50 of the 338 prospective positives are pan-essential ribosomal protein genes. Reported as is, not smoothed over; only tested for the temporal holdout, not the main ablation below. Details in `ml/temporal_holdout.py`.
