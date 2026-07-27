@@ -1,6 +1,6 @@
 # drug-discovery-target-prioritization
 
-An AI-driven pipeline that turns population genetic data into ML-ranked druggable targets, scored against real clinical outcomes.
+A pipeline that turns population genetic data into ML-ranked druggable targets, scored against real clinical outcomes.
 
 > [!NOTE]
 > This is a portfolio project. The result below is real but modest: measurable evidence that mechanistic biology features predict future clinical development, not a claim of having found a novel drug target. Full rationale in [DESIGN.md](DESIGN.md).
