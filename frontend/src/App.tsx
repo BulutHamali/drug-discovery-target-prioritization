@@ -1,0 +1,85 @@
+import { useEffect, useMemo, useState } from "react";
+
+type View = "overview" | "targets" | "results";
+type Target = { symbol: string; score: number; label: number; rank: number; fold_idx: number };
+type TargetPayload = { generated_at: string; source: string; feature_set: string; rows: number; targets: Target[] };
+
+const holdout = [
+  { label: "1%", observed: 0.056, baseline: 0.010, low: 0.000, high: 0.021, lift: "5.59×" },
+  { label: "5%", observed: 0.178, baseline: 0.050, low: 0.027, high: 0.074, lift: "3.57×" },
+  { label: "10%", observed: 0.322, baseline: 0.100, low: 0.071, high: 0.133, lift: "3.22×" },
+  { label: "20%", observed: 0.533, baseline: 0.201, low: 0.160, high: 0.249, lift: "2.66×" },
+];
+
+const variants = [
+  ["all_features", 5.26, "3.97–7.65"], ["no_pubcount", 5.60, "4.16–8.21"],
+  ["no_pubcount_no_string", 4.52, "3.27–7.04"], ["biology_only", 2.68, "2.17–3.85"],
+];
+
+function Metric({ value, label, tone = "ink" }: { value: string; label: string; tone?: string }) {
+  return <div className={`metric ${tone}`}><strong>{value}</strong><span>{label}</span></div>;
+}
+
+function EnrichmentChart() {
+  const width = 720, height = 265, left = 48, top = 22, bottom = 42, right = 24;
+  const x = (i: number) => left + i * ((width - left - right) / 3);
+  const y = (v: number) => top + (0.6 - v) * ((height - top - bottom) / 0.6);
+  const points = (key: "observed" | "baseline") => holdout.map((d, i) => `${x(i)},${y(d[key])}`).join(" ");
+  return <div className="chart-wrap"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Prospective enrichment curve">
+    {[0, .2, .4, .6].map((v) => <g key={v}><line x1={left} x2={width - right} y1={y(v)} y2={y(v)} className="gridline" /><text x={left - 10} y={y(v) + 4} textAnchor="end">{Math.round(v * 100)}%</text></g>)}
+    <polygon points={holdout.map((d, i) => `${x(i)},${y(d.high)}`).concat([...holdout].reverse().map((d, j) => `${x(3 - j)},${y(d.low)}`)).join(" ")} className="confidence" />
+    <polyline points={points("baseline")} className="baseline-line" />
+    <polyline points={points("observed")} className="observed-line" />
+    {holdout.map((d, i) => <g key={d.label}><circle cx={x(i)} cy={y(d.observed)} r="5" className="observed-dot" /><text x={x(i)} y={height - 17} textAnchor="middle">top {d.label}</text></g>)}
+  </svg><div className="chart-legend"><span><i className="legend-observed" /> observed prospective positives</span><span><i className="legend-baseline" /> resampled baseline</span><span><i className="legend-band" /> baseline 95% CI</span></div></div>;
+}
+
+function ForestChart() {
+  return <div className="forest-chart">{variants.map(([name, value, ci], i) => <div className="forest-row" key={name}><span className="forest-name">{name}</span><div className="forest-track"><i style={{ left: `${Number(value) / 9.5 * 100}%` }} /><b style={{ left: `${Number(value) / 9.5 * 100}%` }} /><em style={{ left: `${(Number(String(ci).split("–")[0]) / 9.5) * 100}%`, width: `${((Number(String(ci).split("–")[1]) - Number(String(ci).split("–")[0])) / 9.5) * 100}%` }} /></div><span className="forest-value">{value}× <small>[{ci}]</small></span></div>)}</div>;
+}
+
+export default function App() {
+  const [view, setView] = useState<View>("overview");
+  const nav = (next: View) => setView(next);
+  return <div className="shell">
+    <aside className="sidebar"><div className="brand"><div className="brand-mark">↗</div><div><strong>Target<br />Prioritization</strong><small>results explorer</small></div></div>
+      <div className="project-switcher"><small>PROJECT</small><strong>Drug discovery target study</strong><span>v1 · 26.06 holdout</span></div>
+      <nav><small>EXPLORE</small>{([["overview", "Overview"], ["targets", "Ranked targets"], ["results", "Model results"]] as [View, string][]).map(([key, label]) => <button className={view === key ? "active" : ""} onClick={() => nav(key)} key={key}><span>{key === "overview" ? "◈" : key === "targets" ? "≋" : "⌁"}</span>{label}</button>)}</nav>
+      <div className="sidebar-note"><span className="status-dot" /> Analysis complete<p>Evidence is real and modest. Read the limitations before interpreting rank.</p></div>
+      <a className="repo-link" href="https://github.com/BulutHamali/drug-discovery-target-prioritization" target="_blank" rel="noreferrer">View repository ↗</a>
+    </aside>
+    <main className="main"><header className="topbar"><div><span className="kicker">EVIDENCE REVIEW / 01</span><h1>{view === "overview" ? "A ranked view of what the data supports." : view === "targets" ? "Explore the ranked target universe." : "How much signal survives the checks?"}</h1></div><span className="chip">Prospective holdout · 21.06 → 26.06</span></header>
+      {view === "overview" && <Overview nav={nav} />}{view === "targets" && <Targets />}{view === "results" && <Results />}
+      <footer>Drug discovery target prioritization · Results are from the committed analysis write-up · <a href="https://github.com/BulutHamali/drug-discovery-target-prioritization" target="_blank" rel="noreferrer">source</a></footer>
+    </main>
+  </div>;
+}
+
+function Overview({ nav }: { nav: (v: View) => void }) { return <>
+  <section className="hero-card"><div><span className="eyebrow">PRIMARY RESULT</span><h2>The strongest signal is prospective enrichment above chance.</h2><p>Genes ranked highly by the biology-focused score were more likely to gain a clinical-phase drug label in the later Open Targets release.</p><button onClick={() => nav("results")}>Inspect the evidence <span>→</span></button></div><div className="hero-number"><strong>5.59×</strong><span>enrichment in the top 1%</span><small>95% CI above the resampled baseline</small></div></section>
+  <div className="metrics"><Metric value="338" label="prospective positives" tone="blue" /><Metric value="2.95×" label="PR-AUC lift · biology_only" /><Metric value="86.68%" label="burden coverage" tone="green" /><Metric value="<$1" label="full 22-autosome run" tone="amber" /></div>
+  <section className="split"><div className="panel"><div className="panel-heading"><div><span className="eyebrow">TEMPORAL HOLDOUT</span><h3>Signal at every threshold</h3></div><button className="quiet" onClick={() => nav("results")}>Open results ↗</button></div><EnrichmentChart /></div><div className="panel finding"><span className="eyebrow">READ THIS FIRST</span><h3>Important context</h3><p>The trained model does not clearly beat DepMap essentiality alone on this holdout: 2.95× lift versus 5.03× for the single-feature baseline.</p><div className="callout warning"><strong>Rank is not druggability.</strong><span>High rank means important and understudied, not necessarily tractable.</span></div><button className="text-link" onClick={() => nav("targets")}>See target context →</button></div></section>
+  <section className="panel method-strip"><div><span className="eyebrow">ANALYSIS CONTRACT</span><h3>Designed to test whether the signal earns its place.</h3></div><div className="method-items"><span><b>01</b>Gene-family GroupKFold</span><span><b>02</b>Four feature-set variants</span><span><b>03</b>Separate temporal holdout</span></div></section>
+</>; }
+
+function Targets() {
+  const [payload, setPayload] = useState<TargetPayload | null>(null);
+  const [query, setQuery] = useState("");
+  const [labelFilter, setLabelFilter] = useState<"all" | "known" | "unlabeled">("all");
+  const [selected, setSelected] = useState<Target | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => { fetch("/data/targets.json").then((response) => response.ok ? response.json() : Promise.reject()).then((data: TargetPayload) => { setPayload(data); setSelected(data.targets[0] ?? null); }).catch(() => setError(true)); }, []);
+  const filtered = useMemo(() => (payload?.targets ?? []).filter((target) => target.symbol.toLowerCase().includes(query.toLowerCase()) && (labelFilter === "all" || (labelFilter === "known" ? target.label === 1 : target.label === 0))), [payload, query, labelFilter]);
+
+  return <><section className="intro"><span className="eyebrow">TARGET EXPLORER</span><h2>Move from a score to a biological question.</h2><p>Search the out-of-sample ranking, separate known clinical labels from unlabeled genes, and inspect the provenance of each row. Scores are prioritization evidence—not druggability claims.</p></section>
+    {!payload ? <div className="panel empty-targets">{error ? <><div className="empty-icon">≋</div><h3>Ranked predictions are not bundled yet</h3><p>Run the model and export its cache to activate this table:</p><p><code>python3 ml/train_eval.py --feature-set biology_only</code><br /><code>cd frontend && npm run export-targets</code></p></> : <><div className="empty-icon">…</div><h3>Loading ranked predictions</h3><p>Checking for the generated target artifact.</p></>}<div className="target-contract"><span>Expected fields</span><code>symbol · score · label · rank · fold_idx</code></div></div> : <>
+      <div className="target-toolbar"><label><span>Search gene symbol</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="e.g. KCNMA1" /></label><label><span>Clinical label</span><select value={labelFilter} onChange={(event) => setLabelFilter(event.target.value as typeof labelFilter)}><option value="all">All genes</option><option value="known">Known clinical label</option><option value="unlabeled">Unlabeled at cutoff</option></select></label><div className="target-count"><strong>{filtered.length.toLocaleString()}</strong><span>of {payload.rows.toLocaleString()} targets</span></div></div>
+      <section className="target-layout"><div className="panel target-table-panel"><div className="panel-heading"><div><span className="eyebrow">OUT-OF-SAMPLE RANKING</span><h3>{payload.feature_set} · ranked globally</h3></div><span className="tag">{new Date(payload.generated_at).toLocaleDateString()}</span></div><div className="table-scroll"><table className="target-table"><thead><tr><th>Rank</th><th>Gene</th><th>Score</th><th>Label</th><th>Fold</th></tr></thead><tbody>{filtered.slice(0, 250).map((target) => <tr className={selected?.symbol === target.symbol ? "selected-row" : ""} onClick={() => setSelected(target)} key={target.symbol}><td>#{target.rank}</td><td><strong>{target.symbol}</strong></td><td>{target.score.toFixed(4)}</td><td><span className={`label-pill ${target.label ? "known-pill" : "unlabeled-pill"}`}>{target.label ? "Known" : "Unlabeled"}</span></td><td>{target.fold_idx}</td></tr>)}</tbody></table></div>{filtered.length > 250 && <p className="table-note">Showing the first 250 matches. Narrow the search to explore further.</p>}{filtered.length === 0 && <p className="empty-row">No genes match these filters.</p>}</div><TargetDetail target={selected} /></section>
+    </>}
+    <section className="panel"><div className="panel-heading"><div><span className="eyebrow">VALIDATION EXAMPLE</span><h3>KCNMA1</h3></div><span className="tag">documented example</span></div><p className="detail-copy">The write-up identifies KCNMA1 as one directionally consistent external-evidence check: it ranked in the top 1% and later gained a clinical-phase drug. This is an anecdote, not a powered validation.</p></section></>;
+}
+
+function TargetDetail({ target }: { target: Target | null }) { return <aside className="panel target-detail">{target ? <><span className="eyebrow">SELECTED TARGET</span><h3>{target.symbol}</h3><div className="detail-rank"><strong>#{target.rank}</strong><span>global out-of-sample rank</span></div><div className="detail-grid"><Metric value={target.score.toFixed(4)} label="model score" tone="blue" /><Metric value={target.label ? "Known" : "Unlabeled"} label="clinical label at cutoff" tone={target.label ? "green" : "amber"} /><Metric value={`Fold ${target.fold_idx}`} label="held-out family fold" /></div><div className="callout warning"><strong>Interpretation boundary</strong><span>This score prioritizes genes for follow-up. It does not measure druggability, clinical success, or causal validity.</span></div></> : <><h3>Select a target</h3><p className="detail-copy">Choose a row to inspect its score and provenance.</p></>}</aside>; }
+
+function Results() { return <><section className="split results-top"><div className="panel"><div className="panel-heading"><div><span className="eyebrow">PROSPECTIVE VALIDATION</span><h3>Observed rate vs. chance</h3></div><span className="tag green-tag">all thresholds clear baseline</span></div><EnrichmentChart /></div><div className="panel table-panel"><span className="eyebrow">HOLDOUT TABLE</span><h3>Enrichment by top fraction</h3><table><thead><tr><th>Top</th><th>Observed</th><th>Baseline</th><th>Lift</th></tr></thead><tbody>{holdout.map((d) => <tr key={d.label}><td>{d.label}</td><td>{(d.observed * 100).toFixed(1)}%</td><td>{(d.baseline * 100).toFixed(1)}%</td><td className="positive">{d.lift}</td></tr>)}</tbody></table><p className="table-note">Baseline intervals: 95% resampled CI. Holdout n = 338.</p></div></section><section className="panel"><div className="panel-heading"><div><span className="eyebrow">ABLATION</span><h3>Signal among understudied genes</h3></div><span className="tag">median split · 95% CI</span></div><ForestChart /><div className="result-note"><strong>All four variants clear 1.0×.</strong> Removing publication history and STRING network features does not erase the signal, though the biology-only variant is weaker.</div></section><section className="caveat-grid"><div className="callout warning"><strong>The model does not beat essentiality alone here.</strong><span>DepMap essentiality reaches 5.03× lift on the same temporal holdout. The model’s added value is not established by this test.</span></div><div className="callout"><strong>Study-bias check remains encouraging.</strong><span>Bottom-half lift CIs remain above 1.0 across the feature-set variants.</span></div></section></>; }

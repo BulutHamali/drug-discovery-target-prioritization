@@ -255,6 +255,20 @@ README.md         This file
 
 `ml/train_eval.py` is the main ablation script; `ml/temporal_holdout.py` and the two `ml/validate_*.py` scripts are standalone and don't touch it. Full rationale in [DESIGN.md](DESIGN.md).
 
+## Results explorer
+
+The repository also includes a static React/Vite results explorer in
+`frontend/`. It presents the verified temporal-holdout result, ablation
+results, scientific caveats, and a target-explorer data contract without
+pretending that the generated `ml/cache/oos_predictions.parquet` artifact is
+committed. Run it locally with:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 ## Status checklist
 
 - [x] Terraform stack applies and destroys cleanly

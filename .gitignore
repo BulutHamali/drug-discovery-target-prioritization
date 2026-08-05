@@ -31,3 +31,7 @@ results/
 
 # macOS
 .DS_Store
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/
