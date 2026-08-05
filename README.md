@@ -269,6 +269,11 @@ npm install
 npm run dev
 ```
 
+The platform is AWS-native: S3 provides the data boundary, AWS Batch on Spot
+provides scalable genomic compute, ECR holds reproducible containers, and
+Terraform defines the infrastructure. Vercel hosts only the lightweight
+results presentation layer.
+
 ## Status checklist
 
 - [x] Terraform stack applies and destroys cleanly
