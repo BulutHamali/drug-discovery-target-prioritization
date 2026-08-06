@@ -6,5 +6,6 @@ import "./target-explorer.css";
 import "./aws-branding.css";
 import "./target-state.css";
 import "./modes.css";
+import "./auth-ui.css";
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
