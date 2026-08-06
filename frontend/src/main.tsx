@@ -5,5 +5,6 @@ import "./styles.css";
 import "./target-explorer.css";
 import "./aws-branding.css";
 import "./target-state.css";
+import "./modes.css";
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

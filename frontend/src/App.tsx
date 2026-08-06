@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-type View = "overview" | "targets" | "results";
+type View = "overview" | "targets" | "results" | "admin";
 type Target = { symbol: string; score: number; label: number; rank: number; fold_idx: number };
 type TargetPayload = { generated_at: string; source: string; feature_set: string; rows: number; targets: Target[] };
 
@@ -40,21 +40,27 @@ function ForestChart() {
 
 export default function App() {
   const [view, setView] = useState<View>("overview");
+  const [mode, setMode] = useState<"public" | "admin">("public");
   const nav = (next: View) => setView(next);
+  const switchMode = (next: "public" | "admin") => { setMode(next); setView(next === "admin" ? "admin" : "overview"); };
   return <div className="shell">
     <aside className="sidebar"><div className="brand"><div className="brand-mark">↗</div><div><strong>Target<br />Prioritization</strong><small>results explorer</small></div></div>
       <div className="project-switcher"><small>PROJECT</small><strong>Drug discovery target study</strong><span>v1 · 26.06 holdout</span></div>
       <div className="aws-badge"><span className="aws-mark">AWS</span><div><strong>AWS-native analysis</strong><small>Batch · S3 · ECR · Terraform</small></div></div>
-      <nav><small>EXPLORE</small>{([["overview", "Overview"], ["targets", "Ranked targets"], ["results", "Model results"]] as [View, string][]).map(([key, label]) => <button className={view === key ? "active" : ""} onClick={() => nav(key)} key={key}><span>{key === "overview" ? "◈" : key === "targets" ? "≋" : "⌁"}</span>{label}</button>)}</nav>
-      <div className="sidebar-note"><span className="status-dot" /> Analysis complete<p>Evidence is real and modest. Read the limitations before interpreting rank.</p></div>
+      <div className="mode-switcher"><small>MODE</small><button className={mode === "public" ? "active" : ""} onClick={() => switchMode("public")}>◉ Public demo</button><button className={mode === "admin" ? "active" : ""} onClick={() => switchMode("admin")}>▣ Admin research</button></div>
+      {mode === "public" && <nav><small>EXPLORE</small>{([["overview", "Overview"], ["targets", "Ranked targets"], ["results", "Model results"]] as [View, string][]).map(([key, label]) => <button className={view === key ? "active" : ""} onClick={() => nav(key)} key={key}><span>{key === "overview" ? "◈" : key === "targets" ? "≋" : "⌁"}</span>{label}</button>)}</nav>}
+      {mode === "admin" && <nav><small>RESEARCH CONSOLE</small><button className={view === "admin" ? "active" : ""} onClick={() => nav("admin")}><span>▣</span>Run pipeline</button><button onClick={() => nav("results")}><span>⌁</span>Inspect results</button></nav>}
+      <div className="sidebar-note"><span className="status-dot" /> {mode === "public" ? "Public demo mode" : "Admin mode preview"}<p>{mode === "public" ? "Explore verified results. Execution and sensitive data are disabled." : "Protected AWS execution API required before jobs can be launched."}</p></div>
       <a className="repo-link" href="https://github.com/BulutHamali/drug-discovery-target-prioritization" target="_blank" rel="noreferrer">View repository ↗</a>
     </aside>
-    <main className="main"><header className="topbar"><div><span className="kicker">EVIDENCE REVIEW / 01</span><h1>{view === "overview" ? "A ranked view of what the data supports." : view === "targets" ? "Explore the ranked target universe." : "How much signal survives the checks?"}</h1></div><span className="chip">Prospective holdout · 21.06 → 26.06</span></header>
-      {view === "overview" && <Overview nav={nav} />}{view === "targets" && <Targets />}{view === "results" && <Results />}
+    <main className="main"><header className="topbar"><div><span className="kicker">{mode === "public" ? "PUBLIC DEMO / EVIDENCE REVIEW" : "ADMIN RESEARCH / CONTROL CONSOLE"}</span><h1>{view === "overview" ? "A ranked view of what the data supports." : view === "targets" ? "Explore the ranked target universe." : view === "admin" ? "Run the AWS-native analysis pipeline." : "How much signal survives the checks?"}</h1></div><span className={`chip ${mode === "admin" ? "admin-chip" : ""}`}>{mode === "admin" ? "Protected execution boundary" : "Prospective holdout · 21.06 → 26.06"}</span></header>
+      {view === "overview" && <Overview nav={nav} />}{view === "targets" && <Targets />}{view === "results" && <Results />}{view === "admin" && <AdminConsole />}
       <footer>Drug discovery target prioritization · Results are from the committed analysis write-up · <a href="https://github.com/BulutHamali/drug-discovery-target-prioritization" target="_blank" rel="noreferrer">source</a></footer>
     </main>
   </div>;
 }
+
+function AdminConsole() { return <div className="admin-console"><section className="admin-hero"><div><span className="eyebrow">ADMIN RESEARCH MODE</span><h2>Turn the AWS pipeline into a controlled, observable run.</h2><p>This console is the protected control plane for feature assembly, model evaluation, and publishing a verified result artifact to the public demo.</p></div><span className="admin-lock">▣ AUTHENTICATED<br /><small>API connection pending</small></span></section><div className="metrics"><Metric value="—" label="pipeline status" tone="amber" /><Metric value="0" label="active AWS jobs" /><Metric value="—" label="last artifact" tone="blue" /><Metric value="—" label="estimated cost" tone="green" /></div><section className="panel"><div className="panel-heading"><div><span className="eyebrow">RUN CONFIGURATION</span><h3>Prepare a reproducible ranking run</h3></div><span className="tag">API not connected</span></div><div className="admin-form"><label>Feature set<select disabled><option>biology_only</option><option>all_features</option><option>no_pubcount</option></select></label><label>Open Targets cutoff<input disabled value="21.06" readOnly /></label><label>Evaluation release<input disabled value="26.06" readOnly /></label><label>Run label<input disabled placeholder="e.g. prospective-holdout-v2" /></label></div><div className="admin-actions"><button disabled>Connect execution API to launch</button><span>Execution will submit protected AWS Batch jobs and record the run manifest.</span></div></section><section className="admin-grid"><div className="panel"><span className="eyebrow">PIPELINE STAGES</span><h3>Observable from one console</h3><div className="stage-list">{[["01", "Prepare", "S3 inputs and reference checks"], ["02", "Burden", "AWS Batch Spot chromosome jobs"], ["03", "Assemble", "Feature matrix and labels"], ["04", "Evaluate", "GroupKFold and temporal holdout"], ["05", "Publish", "Approve artifact for public demo"]].map(([number, name, detail]) => <div key={number}><b>{number}</b><span><strong>{name}</strong><small>{detail}</small></span><em>locked</em></div>)}</div></div><div className="panel"><span className="eyebrow">SAFETY BOUNDARY</span><h3>What Admin Mode can control</h3><ul className="safety-list"><li>Never expose AWS credentials to the browser.</li><li>Require server-side authentication and audit logging.</li><li>Show estimated cost before launching Batch jobs.</li><li>Publish only completed artifacts with provenance.</li><li>Keep the public demo read-only and sanitized.</li></ul></div></section></div>; }
 
 function Overview({ nav }: { nav: (v: View) => void }) { return <>
   <section className="hero-card"><div><span className="eyebrow">PRIMARY RESULT</span><h2>The strongest signal is prospective enrichment above chance.</h2><p>Genes ranked highly by the biology-focused score were more likely to gain a clinical-phase drug label in the later Open Targets release.</p><button onClick={() => nav("results")}>Inspect the evidence <span>→</span></button></div><div className="hero-number"><strong>5.59×</strong><span>enrichment in the top 1%</span><small>95% CI above the resampled baseline</small></div></section>

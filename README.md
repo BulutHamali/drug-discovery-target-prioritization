@@ -274,6 +274,11 @@ provides scalable genomic compute, ECR holds reproducible containers, and
 Terraform defines the infrastructure. Vercel hosts only the lightweight
 results presentation layer.
 
+The explorer has two deliberate modes: a read-only public demo for verified
+results, and an authenticated Admin Research mode for configuring and
+observing protected AWS runs. See [docs/admin-mode.md](docs/admin-mode.md) for
+the execution boundary and security contract.
+
 ## Status checklist
 
 - [x] Terraform stack applies and destroys cleanly
