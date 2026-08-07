@@ -1,0 +1,53 @@
+{
+  "family": "drug-target-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/drug-target-api-task-role",
+  "containerDefinitions": [
+    {
+      "name": "drug-target-api",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/drug-target-api:latest",
+      "portMappings": [
+        {
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "TARGET_AUTH_REQUIRED", "value": "true" },
+        { "name": "TARGET_PUBLIC_DEMO_MODE", "value": "true" },
+        { "name": "TARGET_EXECUTION_MODE", "value": "disabled" },
+        { "name": "TARGET_AWS_REGION", "value": "us-east-1" },
+        { "name": "TARGET_CORS_ORIGINS", "value": "https://your-frontend.vercel.app" }
+      ],
+      "secrets": [
+        {
+          "name": "TARGET_COGNITO_ISSUER",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:drug-target/cognito-issuer"
+        },
+        {
+          "name": "TARGET_COGNITO_CLIENT_ID",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:drug-target/cognito-client-id"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/drug-target-api",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')\""],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      }
+    }
+  ]
+}
